@@ -1,0 +1,523 @@
+{{define "icon-eq"}}
+<span class="eq eq-{{.}}"><span class="bar"></span><span class="bar"></span><span class="bar"></span><span class="bar"></span></span>
+{{end}}
+
+{{define "icon-play"}}<svg viewBox="0 0 24 24" fill="currentColor"><polygon points="7,4 20,12 7,20"/></svg>{{end}}
+{{define "icon-pause"}}<svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg>{{end}}
+{{define "icon-skip"}}<svg viewBox="0 0 24 24" fill="currentColor"><polygon points="5,4 15,12 5,20"/><rect x="17" y="4" width="2" height="16"/></svg>{{end}}
+{{define "icon-stop"}}<svg viewBox="0 0 24 24" fill="currentColor"><rect x="5" y="5" width="14" height="14" rx="2"/></svg>{{end}}
+{{define "icon-remove"}}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="5" y1="5" x2="19" y2="19"/><line x1="19" y1="5" x2="5" y2="19"/></svg>{{end}}
+{{define "icon-volume"}}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="4,9 8,9 12,5 12,19 8,15 4,15" fill="currentColor" stroke="none"/><path d="M16 8a5 5 0 010 8"/></svg>{{end}}
+{{define "icon-grip"}}<svg viewBox="0 0 24 24" fill="currentColor"><circle cx="9" cy="6" r="1.5"/><circle cx="15" cy="6" r="1.5"/><circle cx="9" cy="12" r="1.5"/><circle cx="15" cy="12" r="1.5"/><circle cx="9" cy="18" r="1.5"/><circle cx="15" cy="18" r="1.5"/></svg>{{end}}
+
+{{/*
+  requested-by takes a *player.Track and renders who queued it — avatar
+  plus username, tucked onto the end of the artist line. "web" is the
+  fallback RequestedBy for sessions with no Discord identity
+  (WEB_AUTH_TOKEN or no auth at all — see handlePlay/handleHistoryRequeue
+  in api.go), so it's not a real username worth showing. The avatar goes
+  through /avatar (avatarcache.go), not straight to Discord's CDN, so
+  it's fetched once and cached instead of re-downloaded on every render.
+*/}}
+{{define "requested-by"}}{{if and .RequestedBy (ne .RequestedBy "web")}}<span class="requested-by"> · {{if .RequestedByAvatarURL}}<img class="requester-avatar" src="/avatar?src={{.RequestedByAvatarURL | urlquery}}" alt="">{{end}}{{.RequestedBy}}</span>{{end}}{{end}}
+
+{{define "nav"}}
+<header class="top">
+  <div class="brand">
+    {{template "icon-eq" "idle"}}
+    <h1>noctune</h1>
+  </div>
+  <nav>
+    {{with .Session}}
+      {{if not .Trusted}}
+      <span class="nav-user">
+        {{if .AvatarURL}}<img class="nav-avatar" src="{{.AvatarURL}}" alt="">{{end}}
+        {{.Username}}
+      </span>
+      {{end}}
+      <a href="/logout">sign out</a>
+    {{end}}
+  </nav>
+</header>
+{{end}}
+
+{{define "sidebar"}}
+<aside class="sidebar">
+  <div class="sidebar-title">Servers</div>
+  {{range .Guilds}}
+  <a class="guild{{if eq .ID $.Guild.ID}} active{{end}}" href="/g/{{.ID}}">
+    <span class="guild-icon">{{if .Icon}}<img src="{{.Icon}}" alt="" style="width:100%;height:100%;border-radius:50%;object-fit:cover">{{else}}{{.Initials}}{{end}}</span>
+    <span class="guild-name">{{.Name}}</span>
+    <span class="guild-status{{if .Live}} live{{end}}"></span>
+  </a>
+  {{end}}
+</aside>
+{{end}}
+
+{{define "toast"}}
+<div id="toast" hx-swap-oob="true" class="toast">{{.}}</div>
+{{end}}
+
+{{define "page:login"}}
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>noctune — sign in</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+{{template "nav" .}}
+<main>
+  <div class="card login-card">
+    {{template "icon-eq" "playing"}}
+    <h2>Sign in</h2>
+    {{if .Error}}<p style="color:var(--danger)">{{.Error}}</p>{{end}}
+    {{if .DiscordEnabled}}
+    <a class="primary discord-login" href="/auth/discord/login">Sign in with Discord</a>
+    {{end}}
+    {{if and .DiscordEnabled .TokenEnabled}}
+    <p class="login-divider">or</p>
+    {{end}}
+    {{if .TokenEnabled}}
+    <form class="inline" method="post" action="/login" style="justify-content:center">
+      <input type="password" name="token" placeholder="Access token" autofocus required>
+      <button class="primary" type="submit">Sign in</button>
+    </form>
+    {{end}}
+    {{if and (not .DiscordEnabled) (not .TokenEnabled)}}
+    <p class="empty">No login is configured — the web GUI is open to anyone who can reach it.</p>
+    {{end}}
+  </div>
+</main>
+</body>
+</html>
+{{end}}
+
+{{define "page:index"}}
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>noctune</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+{{template "nav" .}}
+<main>
+  <div class="card">
+    <h2>Servers</h2>
+    {{if not .Guilds}}
+      <p class="empty">noctune isn't in any servers yet. Invite it, then refresh this page.</p>
+    {{else}}
+      <ul class="guild-list">
+        {{range .Guilds}}
+        <li>
+          <a href="/g/{{.ID}}">
+            <span class="guild-icon">{{if .Icon}}<img src="{{.Icon}}" alt="" style="width:100%;height:100%;border-radius:50%;object-fit:cover">{{else}}{{.Initials}}{{end}}</span>
+            <span class="guild-name">{{.Name}}</span>
+            <span class="guild-status{{if .Live}} live{{end}}"></span>
+          </a>
+        </li>
+        {{end}}
+      </ul>
+    {{end}}
+  </div>
+</main>
+</body>
+</html>
+{{end}}
+
+{{define "page:guild"}}
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>noctune — {{.Guild.Name}}</title>
+<link rel="stylesheet" href="/static/style.css">
+<script src="/static/htmx.min.js"></script>
+<script src="/static/sse.js"></script>
+</head>
+<body>
+{{template "nav" .}}
+<div class="shell">
+  {{template "sidebar" .}}
+  <main>
+    <div id="toast"></div>
+    <div class="card">
+      <h2>{{.Guild.Name}}</h2>
+      {{template "panel-shell" .Panel}}
+    </div>
+  </main>
+</div>
+</body>
+</html>
+{{end}}
+
+{{/*
+  Split in two so the SSE-owning element is never itself replaced by an
+  SSE swap: panel-shell opens the EventSource once and stays put;
+  panel-inner is the part that actually gets swapped, both on page load
+  and on every "message" event. POST action handlers below return 204 —
+  they only trigger state changes; the SSE stream is the single source
+  of truth for what gets rendered.
+*/}}
+{{define "panel-shell"}}
+<div hx-ext="sse" sse-connect="/g/{{.GuildID}}/events">
+  <div id="panel-content" sse-swap="message" hx-swap="none">
+    {{template "panel-inner" .}}
+  </div>
+</div>
+{{end}}
+
+{{/*
+  panel-inner is only used for the initial full-page render (panel-shell
+  above). SSE updates render panel-media, panel-controls, and panel-queue
+  independently (see handleEvents in api.go) and push each as its own
+  hx-swap-oob fragment, so e.g. queuing a track only touches
+  #queue-section, and clicking a loop-mode or volume control only
+  touches #now-playing-controls — neither tears down and restarts the
+  art, EQ icon, or the running/wavy progress bar in #now-playing-media
+  just because something elsewhere changed. #status-volume and
+  #status-loop are their own even-smaller OOB spans so the "· 68% ·
+  loop queue" text embedded in #now-playing-media's status line still
+  stays correct on a volume- or loop-only change, without that whole
+  block having to re-render for it.
+*/}}
+{{define "panel-inner"}}
+  {{template "panel-media" .}}
+  {{template "panel-controls" .}}
+  {{template "panel-queue" .}}
+{{end}}
+
+{{define "panel-media"}}
+<div id="now-playing-media" hx-swap-oob="true">
+  <div class="now-playing">
+    {{if .State.Current}}
+      {{if .State.Current.ArtworkURL}}
+        <img class="art" src="{{.State.Current.ArtworkURL}}" alt="">
+      {{else}}
+        <div class="art-placeholder"></div>
+      {{end}}
+      <div class="meta">
+        <div class="status{{if eq .State.Status "playing"}} is-playing{{end}}{{if eq .State.Status "loading"}} is-loading{{end}}">
+          {{template "icon-eq" .State.Status}}
+          {{if eq .State.Status "loading"}}
+            loading…
+          {{else}}
+            {{.State.Status}} · <span id="status-volume">{{.State.Volume}}%</span><span id="status-loop">{{if ne .State.Loop "off"}} · loop {{.State.Loop}}{{end}}</span>
+          {{end}}
+        </div>
+        <div class="title">{{.State.Current.Title}}</div>
+        <div class="artist">{{.State.Current.Artist}}{{template "requested-by" .State.Current}}</div>
+      </div>
+    {{else}}
+      <div class="art-placeholder"></div>
+      <div class="meta">
+        <div class="status">{{template "icon-eq" "idle"}} idle · <span id="status-volume">{{.State.Volume}}%</span><span id="status-loop"></span></div>
+        <div class="title empty">Nothing is playing</div>
+      </div>
+    {{end}}
+  </div>
+
+  {{if .Progress.Visible}}
+  <div class="progress">
+    <div class="progress-track">
+      <div class="progress-fill" id="progress-fill" style="width: {{.Progress.PercentStart}}%; animation-duration: {{.Progress.TotalSeconds}}s; animation-delay: -{{.Progress.PositionSeconds}}s; animation-play-state: {{if eq .State.Status "playing"}}running{{else}}paused{{end}};">
+        <div class="wave-strip" style="animation-play-state: {{if eq .State.Status "playing"}}running{{else}}paused{{end}};"></div>
+      </div>
+    </div>
+    <div class="progress-time">
+      <span id="progress-elapsed">{{.Progress.ElapsedText}}</span>
+      <span>{{.Progress.TotalText}}</span>
+    </div>
+  </div>
+  <script>
+  (function () {
+    if (window.__noctuneTick) { clearInterval(window.__noctuneTick); window.__noctuneTick = null; }
+    var playing = {{if eq .State.Status "playing"}}true{{else}}false{{end}};
+    if (!playing) return;
+
+    var position = {{.Progress.PositionSeconds}};
+    var total = {{.Progress.TotalSeconds}};
+    var elapsedEl = document.getElementById("progress-elapsed");
+    var startedAt = Date.now();
+    window.__noctuneTick = setInterval(function () {
+      var elapsed = Math.min(position + (Date.now() - startedAt) / 1000, total);
+      var m = Math.floor(elapsed / 60), s = Math.floor(elapsed % 60);
+      elapsedEl.textContent = m + ":" + (s < 10 ? "0" : "") + s;
+      if (elapsed >= total) { clearInterval(window.__noctuneTick); window.__noctuneTick = null; }
+    }, 500);
+  })();
+  </script>
+  {{end}}
+</div>
+{{end}}
+
+{{define "panel-status-text"}}
+<span id="status-volume" hx-swap-oob="true">{{.State.Volume}}%</span>
+<span id="status-loop" hx-swap-oob="true">{{if and .State.Current (ne .State.Loop "off")}} · loop {{.State.Loop}}{{end}}</span>
+{{end}}
+
+{{define "panel-controls"}}
+<div id="now-playing-controls" hx-swap-oob="true">
+  <div class="transport">
+    {{if eq .State.Status "loading"}}
+    <span class="icon-btn primary loading" aria-label="Loading" aria-busy="true"><span class="spinner"></span></span>
+    {{else if eq .State.Status "playing"}}
+    <form hx-post="/g/{{.GuildID}}/pause"><button class="icon-btn primary" type="submit" aria-label="Pause">{{template "icon-pause"}}</button></form>
+    {{else}}
+    <form hx-post="/g/{{.GuildID}}/resume"><button class="icon-btn primary" type="submit" aria-label="Play">{{template "icon-play"}}</button></form>
+    {{end}}
+    <form hx-post="/g/{{.GuildID}}/skip"><button class="icon-btn" type="submit" aria-label="Skip">{{template "icon-skip"}}</button></form>
+    <form hx-post="/g/{{.GuildID}}/stop"><button class="icon-btn danger" type="submit" aria-label="Stop">{{template "icon-stop"}}</button></form>
+
+    <form class="volume" hx-post="/g/{{.GuildID}}/volume" hx-trigger="change" hx-swap="none">
+      {{template "icon-volume"}}
+      <input type="range" name="level" min="0" max="100" value="{{.State.Volume}}"
+             oninput="this.nextElementSibling.value = this.value + '%'">
+      <output>{{.State.Volume}}%</output>
+    </form>
+  </div>
+  <script>
+  (function () {
+    var input = document.querySelector('.volume input[name="level"]');
+    if (!input) return;
+    var wheelTimer = null;
+
+    // Precise, no-typing volume control: each wheel notch nudges by 1%
+    // (ignoring deltaY's magnitude, which varies wildly between a mouse's
+    // discrete notches and a trackpad's continuous small deltas — using
+    // only its sign keeps the feel consistent across both) and updates
+    // the displayed value immediately. The actual POST is debounced so
+    // scrolling several notches in a row sends one request, not one per
+    // notch.
+    input.addEventListener('wheel', function (e) {
+      e.preventDefault();
+      var step = e.deltaY < 0 ? 1 : -1;
+      var next = Math.min(100, Math.max(0, parseInt(input.value, 10) + step));
+      if (next === parseInt(input.value, 10)) return;
+      input.value = next;
+      input.nextElementSibling.value = next + '%';
+      clearTimeout(wheelTimer);
+      wheelTimer = setTimeout(function () {
+        input.dispatchEvent(new Event('change', { bubbles: true }));
+      }, 250);
+    }, { passive: false });
+  })();
+  </script>
+
+  <div class="loop-row">
+    Loop
+    <div class="segmented">
+      <form hx-post="/g/{{.GuildID}}/loop" hx-swap="none">
+        <input type="hidden" name="mode" value="off">
+        <button type="submit" class="{{if eq .State.Loop "off"}}active{{end}}">Off</button>
+      </form>
+      <form hx-post="/g/{{.GuildID}}/loop" hx-swap="none">
+        <input type="hidden" name="mode" value="track">
+        <button type="submit" class="{{if eq .State.Loop "track"}}active{{end}}">Track</button>
+      </form>
+      <form hx-post="/g/{{.GuildID}}/loop" hx-swap="none">
+        <input type="hidden" name="mode" value="queue">
+        <button type="submit" class="{{if eq .State.Loop "queue"}}active{{end}}">Queue</button>
+      </form>
+    </div>
+  </div>
+
+  <div class="channel-row">
+    {{if .ShowChannelPicker}}
+    <form class="inline" hx-post="/g/{{.GuildID}}/join">
+      <select name="channel_id">
+        {{range .Channels}}
+        <option value="{{.ID}}" {{if eq .ID $.State.VoiceChannelID}}selected{{end}}>{{.Name}}</option>
+        {{end}}
+      </select>
+      <button type="submit">Join</button>
+    </form>
+    {{else}}
+    <form hx-post="/g/{{.GuildID}}/join">
+      <button type="submit">Join my channel</button>
+    </form>
+    {{end}}
+    {{if .State.VoiceChannelID}}
+    <form hx-post="/g/{{.GuildID}}/leave">
+      <button type="submit" class="danger">Leave</button>
+    </form>
+    {{end}}
+  </div>
+</div>
+{{end}}
+
+{{define "panel-queue"}}
+<div id="queue-section" hx-swap-oob="true">
+  <form class="play-form" hx-post="/g/{{.GuildID}}/play" hx-indicator="#queue-spinner" hx-on::before-request="this.reset()">
+    <input type="text" id="query-input" hx-preserve="true" name="query" placeholder="Search, YouTube link, or Spotify link" required>
+    <button class="primary" type="submit">
+      Queue
+      <span id="queue-spinner" class="spinner htmx-indicator" aria-hidden="true"></span>
+    </button>
+  </form>
+
+  {{if .State.Queue}}
+  <ul class="queue-list" data-reorder-url="/g/{{.GuildID}}/queue/reorder">
+    {{range $i, $t := .State.Queue}}
+    <li draggable="true" data-id="{{$t.ID}}">
+      <span class="drag-handle" aria-hidden="true">{{template "icon-grip"}}</span>
+      <span class="idx">{{inc $i}}</span>
+      {{if $t.ArtworkURL}}
+        <img class="queue-thumb" src="{{$t.ArtworkURL}}" alt="">
+      {{else}}
+        <span class="queue-thumb-placeholder"></span>
+      {{end}}
+      <span class="meta">
+        <div class="title">{{$t.Title}}</div>
+        <div class="artist">{{$t.Artist}}{{template "requested-by" $t}}</div>
+      </span>
+      <form hx-post="/g/{{$.GuildID}}/queue/play">
+        <input type="hidden" name="id" value="{{$t.ID}}">
+        <button type="submit" class="icon-btn small" aria-label="Play now">{{template "icon-play"}}</button>
+      </form>
+      <form hx-post="/g/{{$.GuildID}}/queue/remove">
+        <input type="hidden" name="id" value="{{$t.ID}}">
+        <button type="submit" class="icon-btn small danger" aria-label="Remove">{{template "icon-remove"}}</button>
+      </form>
+    </li>
+    {{end}}
+  </ul>
+  <script>
+  (function () {
+    var list = document.querySelector('.queue-list');
+    if (!list) return;
+    var dragEl = null;
+
+    // Every #queue-section swap (add, remove, or reorder) replaces every
+    // <li> wholesale, so without this the entrance animation would replay
+    // on the entire list on every change — reading as a full refresh
+    // instead of one row joining an otherwise-static list. Tracking which
+    // track IDs were already on screen last render (in a page-level set,
+    // since each render is a fresh script execution) lets only genuinely
+    // new rows animate in; a reorder or an unrelated queue change touches
+    // no new IDs, so every row there gets .no-anim too.
+    var seenIds = window.__noctuneQueueSeenIds || {};
+    var currentIds = {};
+    Array.prototype.forEach.call(list.querySelectorAll('li[data-id]'), function (li) {
+      var id = li.dataset.id;
+      currentIds[id] = true;
+      if (seenIds[id]) li.classList.add('no-anim');
+    });
+    window.__noctuneQueueSeenIds = currentIds;
+
+    function itemAfter(y) {
+      var items = Array.prototype.slice.call(list.querySelectorAll('li[data-id]:not(.dragging)'));
+      var closest = { offset: -Infinity, element: null };
+      items.forEach(function (child) {
+        var box = child.getBoundingClientRect();
+        var offset = y - box.top - box.height / 2;
+        if (offset < 0 && offset > closest.offset) closest = { offset: offset, element: child };
+      });
+      return closest.element;
+    }
+
+    function submitOrder() {
+      var ids = Array.prototype.map.call(list.querySelectorAll('li[data-id]'), function (li) { return li.dataset.id; });
+      var body = ids.map(function (id) { return 'id=' + encodeURIComponent(id); }).join('&');
+      fetch(list.dataset.reorderUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: body
+      }).then(function (resp) { return resp.text(); }).then(function (html) {
+        // A 204 (reorder accepted) has no body; a rejection (e.g. not in
+        // the bot's voice channel) comes back as the same #toast fragment
+        // every other action uses — forward it by hand since this request
+        // didn't go through htmx.
+        if (!html) return;
+        var tmp = document.createElement('div');
+        tmp.innerHTML = html;
+        var toast = tmp.querySelector('#toast');
+        var target = document.getElementById('toast');
+        if (toast && target) target.replaceWith(toast);
+      }).catch(function () {});
+    }
+
+    list.addEventListener('dragstart', function (e) {
+      var li = e.target.closest('li[data-id]');
+      if (!li) return;
+      dragEl = li;
+      e.dataTransfer.effectAllowed = 'move';
+      // Firefox refuses to start a drag at all without a setData() call
+      // during dragstart (Chrome/Safari are lenient); this also
+      // overrides the browser's own drag payload for the artwork
+      // <img>, which is natively draggable on its own otherwise.
+      e.dataTransfer.setData('text/plain', li.dataset.id);
+      li.classList.add('dragging');
+    });
+    list.addEventListener('dragend', function () {
+      if (dragEl) dragEl.classList.remove('dragging');
+      dragEl = null;
+    });
+    list.addEventListener('dragover', function (e) {
+      if (!dragEl) return;
+      e.preventDefault();
+      var after = itemAfter(e.clientY);
+      if (after == null) list.appendChild(dragEl);
+      else if (after !== dragEl) list.insertBefore(dragEl, after);
+    });
+    list.addEventListener('drop', function (e) {
+      if (!dragEl) return;
+      e.preventDefault();
+      submitOrder();
+    });
+  })();
+  </script>
+  {{else}}
+  <p class="empty" style="margin-top:1rem">Queue is empty.</p>
+  {{end}}
+
+  {{if .State.History}}
+  <details id="history-section" class="history-section">
+    <summary>History ({{len .State.History}})</summary>
+    <ul class="history-list">
+      {{range $t := .State.History}}
+      <li>
+        {{if $t.ArtworkURL}}
+          <img class="queue-thumb" src="{{$t.ArtworkURL}}" alt="">
+        {{else}}
+          <span class="queue-thumb-placeholder"></span>
+        {{end}}
+        <span class="meta">
+          <div class="title">{{$t.Title}}</div>
+          <div class="artist">{{$t.Artist}}{{template "requested-by" $t}}</div>
+        </span>
+        <form hx-post="/g/{{$.GuildID}}/history/requeue">
+          <input type="hidden" name="id" value="{{$t.ID}}">
+          <button type="submit" class="icon-btn small" aria-label="Add to queue">{{template "icon-play"}}</button>
+        </form>
+      </li>
+      {{end}}
+    </ul>
+  </details>
+  <script>
+  (function () {
+    // Every #queue-section swap replaces this whole <details> node, which
+    // would otherwise reset it to closed on every notify (queue change,
+    // track transition, volume, ...) — right when it's most likely to be
+    // open, since history only grows on a track transition. hx-preserve
+    // isn't usable here: it keeps the entire old node (stale list and
+    // count included), not just the open/closed state. So the open state
+    // is tracked by hand in a page-level flag, the same pattern already
+    // used for __noctuneQueueSeenIds above.
+    var details = document.getElementById('history-section');
+    if (!details) return;
+    if (window.__noctuneHistoryOpen) details.open = true;
+    details.addEventListener('toggle', function () {
+      window.__noctuneHistoryOpen = details.open;
+    });
+  })();
+  </script>
+  {{end}}
+</div>
+{{end}}

@@ -1,0 +1,12 @@
+{
+  $schema: "https://docs.renovatebot.com/renovate-schema.json",
+  extends: ["local>krezh/renovate-config"],
+  postUpdateOptions: ["gomodTidy"],
+  lockFileMaintenance: {
+    enabled: true,
+    schedule: ["after 1am and before 2am"],
+    automerge: true,
+    automergeType: "pr",
+    ignoreTests: false,
+  },
+}

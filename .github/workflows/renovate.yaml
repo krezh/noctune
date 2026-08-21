@@ -1,0 +1,52 @@
+---
+# yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
+name: Renovate
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .renovaterc.json5
+      - .renovate/**.json5
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  WEBHOOK_URL: https://renovate-webhook.plexuz.xyz/webhook/v1/schedule
+  WEBHOOK_NAMESPACE: ci
+  WEBHOOK_JOB: github
+
+# Read-only: this workflow only calls an external webhook, no repo API calls.
+permissions:
+  contents: read
+
+jobs:
+  renovate:
+    name: Trigger Renovate Operator
+    runs-on: ubuntu-latest
+    environment: prod
+    steps:
+      - name: Call Renovate Operator webhook
+        shell: bash
+        env:
+          WEBHOOK_TOKEN: ${{ secrets.RENOVATE_OPERATOR_WEBHOOK }}
+          PROJECT: ${{ github.repository }}
+        run: |
+          if [ -z "${WEBHOOK_TOKEN}" ]; then
+            echo "::error::RENOVATE_OPERATOR_WEBHOOK secret is not set"
+            exit 1
+          fi
+
+          status=$(curl --silent --show-error \
+            --request POST \
+            --header "Authorization: Bearer ${WEBHOOK_TOKEN}" \
+            --output /dev/stderr \
+            --write-out "%{http_code}" \
+            "${WEBHOOK_URL}?namespace=${WEBHOOK_NAMESPACE}&job=${WEBHOOK_JOB}&project=${PROJECT/\//%2F}")
+
+          echo "Webhook for ${PROJECT} responded with HTTP ${status}"
+          [ "${status}" = "200" ]

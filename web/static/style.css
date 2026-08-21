@@ -1,0 +1,790 @@
+/* Fonts are self-hosted (web/static/fonts) so the GUI has no runtime
+   dependency on an external font CDN — matches the rest of noctune
+   shipping as one self-contained binary. */
+@font-face {
+  font-family: "Manrope";
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+  src: url("/static/fonts/manrope-var.woff2") format("woff2");
+}
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 400 500;
+  font-display: swap;
+  src: url("/static/fonts/jbmono-var.woff2") format("woff2");
+}
+
+:root {
+  color-scheme: dark;
+
+  /* Dense dark UI: near-black ground, one warm accent, sharp corners
+     throughout — no radius tokens left with a nonzero value. */
+  --bg: #0c0c0d;
+  --panel: #0e0e0e;
+  --panel-2: #151515;
+  --border: #242424;
+
+  --moon: #f0efec;
+  --moon-dim: #7a7a7a;
+
+  --amber: #e8863f;
+  --amber-dim: color-mix(in srgb, var(--amber) 55%, var(--border));
+  --amber-ink: #0c0c0d;
+
+  --ok: #6fae5a;
+  --warn: #d9a441;
+  --danger: #d9544f;
+  --danger-dim: color-mix(in srgb, var(--danger) 55%, var(--border));
+
+  --radius: 0;
+  --radius-sm: 0;
+
+  --font-display: "Manrope", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-body: "Manrope", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+* {
+  box-sizing: border-box;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+
+body {
+  margin: 0;
+  font-family: var(--font-body);
+  background: var(--bg);
+  color: var(--moon);
+  line-height: 1.45;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--moon-dim); }
+
+a { color: inherit; }
+
+:focus-visible {
+  outline: 1px solid var(--amber);
+  outline-offset: 2px;
+}
+
+/* --- Signature mark: four bars that read the room. Playing bounces,
+   loading pulses, paused holds mid-height, idle sits low and dim. --- */
+.eq {
+  display: inline-flex;
+  align-items: flex-end;
+  gap: 2.5px;
+  height: 13px;
+  flex: none;
+}
+.eq .bar {
+  width: 2.5px;
+  background: var(--border);
+  height: 25%;
+}
+.eq-playing .bar { background: var(--amber); animation: eq-bounce 1.1s ease-in-out infinite; }
+.eq-playing .bar:nth-child(1) { animation-delay: -1.0s; }
+.eq-playing .bar:nth-child(2) { animation-delay: -0.7s; }
+.eq-playing .bar:nth-child(3) { animation-delay: -0.4s; }
+.eq-playing .bar:nth-child(4) { animation-delay: -0.1s; }
+.eq-paused .bar { background: var(--moon-dim); height: 55%; }
+.eq-loading .bar { background: var(--amber); height: 55%; animation: eq-pulse 0.9s ease-in-out infinite; }
+
+@keyframes eq-bounce {
+  0%, 100% { height: 20%; }
+  50% { height: 100%; }
+}
+@keyframes eq-pulse {
+  0%, 100% { opacity: 0.35; }
+  50% { opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .eq-playing .bar { animation: none; height: 65%; }
+  .eq-loading .bar { animation: none; opacity: 0.7; }
+}
+
+header.top {
+  display: flex;
+  align-items: center;
+  gap: 0.85rem;
+  padding: 0.55rem 0.9rem;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  box-shadow: 0 4px 10px -4px rgba(0, 0, 0, 0.55);
+  position: sticky;
+  top: 0;
+  z-index: 3;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+header.top h1 {
+  font-family: var(--font-display);
+  font-weight: 800;
+  font-size: 1rem;
+  margin: 0;
+  text-transform: uppercase;
+  letter-spacing: 0.16em;
+  color: var(--amber);
+}
+
+header.top nav {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  margin-left: auto;
+}
+header.top nav a {
+  color: var(--moon-dim);
+  text-decoration: none;
+  font-size: 0.82rem;
+  padding: 0.3rem 0.6rem;
+  transition: color 0.15s, background-color 0.15s;
+}
+header.top nav a:hover { color: var(--moon); background: var(--panel-2); }
+
+.nav-user {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  color: var(--moon-dim);
+  font-size: 0.82rem;
+  padding: 0.3rem 0.5rem;
+  padding-left: 0.85rem;
+  border-left: 1px solid var(--border);
+}
+.nav-avatar { width: 20px; height: 20px; border-radius: 50%; border: 1px solid var(--border); }
+
+/* --- Shell: sidebar + centered content, guild page only --- */
+.shell { display: flex; flex: 1; min-height: 0; }
+.sidebar {
+  width: 240px;
+  flex: 0 0 auto;
+  background: var(--panel);
+  border-right: 1px solid var(--border);
+  padding: 0 0 0.5rem;
+}
+.sidebar-title {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  padding: 0.85rem 0.75rem 0.4rem;
+  color: var(--moon-dim);
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+.sidebar-title::after { content: ""; height: 1px; flex: 1; background: var(--border); }
+.shell main { flex: 1; min-width: 0; }
+
+main {
+  max-width: 640px;
+  margin: 0 auto;
+  padding: 1.5rem 1.5rem 4rem;
+}
+
+.card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  box-shadow: 0 6px 14px -6px rgba(0, 0, 0, 0.5);
+  padding: 1.1rem 1.2rem;
+  margin-bottom: 1.25rem;
+}
+
+.card > h2 {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 0.95rem;
+  margin: 0 0 1rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+@keyframes reveal {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  @keyframes reveal { from { opacity: 1; } to { opacity: 1; } }
+}
+
+/* --- Guild picker (index page list + sidebar nav rows) --- */
+.guild-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.guild-list li { border-top: 1px solid var(--border); }
+.guild-list li:first-child { border-top: 0; }
+
+.guild-list a,
+.sidebar .guild {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  padding: 0.5rem 0.2rem;
+  color: var(--moon);
+  text-decoration: none;
+  border-left: 2px solid transparent;
+  transition: background-color 0.15s, border-color 0.15s;
+}
+.guild-list a { padding: 0.6rem 0.3rem; }
+.sidebar .guild { padding: 0.4rem 0.9rem 0.4rem 0.85rem; min-height: 2.6rem; }
+.guild-list a:hover,
+.sidebar .guild:hover { background: color-mix(in srgb, var(--amber) 8%, transparent); }
+.sidebar .guild.active {
+  background: color-mix(in srgb, var(--amber) 12%, var(--panel-2));
+  border-left-color: var(--amber);
+}
+.sidebar .guild.active .guild-name { color: var(--amber); font-weight: 600; }
+
+.guild-list img,
+.guild-icon {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  flex: none;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+}
+.guild-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  font-weight: 600;
+  color: var(--moon-dim);
+  overflow: hidden;
+}
+.sidebar .guild-icon { width: 26px; height: 26px; font-size: 0.6rem; }
+
+.guild-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 0.88rem; }
+
+.guild-status {
+  width: 0.45rem;
+  height: 0.45rem;
+  border-radius: 50%;
+  flex: none;
+  background: var(--border);
+}
+.guild-status.live { background: var(--ok); }
+
+/* --- Now playing hero --- */
+.now-playing {
+  display: flex;
+  gap: 1.1rem;
+  align-items: center;
+  animation: reveal 0.3s ease-out both;
+}
+
+.now-playing .art {
+  width: 76px;
+  height: 76px;
+  object-fit: cover;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  flex: none;
+}
+
+.now-playing .art-placeholder {
+  width: 76px;
+  height: 76px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  flex: none;
+}
+
+.now-playing .meta { min-width: 0; flex: 1; }
+
+.now-playing .status {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  color: var(--moon-dim);
+  font-size: 0.68rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-bottom: 0.35rem;
+}
+.now-playing .status.is-playing { color: var(--amber); }
+.now-playing .status.is-loading { color: var(--amber); }
+
+.now-playing .title {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 1.05rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.now-playing .title.empty {
+  font-weight: 500;
+  color: var(--moon-dim);
+}
+
+.now-playing .artist {
+  color: var(--moon-dim);
+  font-size: 0.86rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.requester-avatar {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  vertical-align: -3px;
+  margin-right: 0.3em;
+  background: var(--panel-2);
+}
+
+/* --- Progress: Material-3-style wavy media indicator ---
+   The played portion is a squiggly line that slithers while the track
+   is actually playing and freezes the instant it isn't — the motion is
+   a state readout, not decoration. The width driving how much of the
+   wave is revealed is still the same plain linear CSS animation seeded by a
+   negative animation-delay (set inline per render — see panel-media
+   in templates.html), not JS-driven width changes: JS nudging width on
+   a timer raced against htmx's SSE hx-swap-oob replacing this element
+   out from under it. That mechanism is untouched; only the visual
+   drawn inside it changed. */
+.progress { margin-top: 0.9rem; }
+
+.progress-track {
+  position: relative;
+  height: 12px;
+  overflow: hidden;
+}
+/* remaining (unplayed) track: a thin flat line under the wave */
+.progress-track::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 2px;
+  background: var(--panel-2);
+  border-top: 1px solid var(--border);
+  transform: translateY(-50%);
+}
+.progress-fill {
+  position: absolute;
+  inset: 0;
+  width: 0;
+  overflow: hidden;
+  animation-name: progress-fill;
+  animation-timing-function: linear;
+  animation-fill-mode: forwards;
+  animation-play-state: paused;
+}
+@keyframes progress-fill {
+  from { width: 0%; }
+  to { width: 100%; }
+}
+.wave-strip {
+  position: absolute;
+  inset: 0;
+  width: 200%;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='14' viewBox='0 0 24 14'%3E%3Cpath d='M0,7 C3,1.5 9,12.5 12,7 C15,1.5 21,12.5 24,7' stroke='%23e8863f' stroke-width='2.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
+  background-repeat: repeat-x;
+  background-position: 0 center;
+  animation: wave-slither 2.6s linear infinite;
+}
+@keyframes wave-slither {
+  from { background-position-x: 0; }
+  to   { background-position-x: -24px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .progress-fill { animation: none; }
+  .wave-strip { animation: none; }
+}
+
+.progress-time {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 0.3rem;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 0.75rem;
+  color: var(--moon-dim);
+}
+
+/* --- Transport --- */
+.transport {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 1rem;
+}
+
+.icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.15rem;
+  height: 2.15rem;
+  padding: 0;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--moon);
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s, background-color 0.15s;
+}
+.icon-btn:hover { border-color: var(--amber); color: var(--amber); }
+.icon-btn:active { transform: scale(0.96); }
+.icon-btn svg { width: 16px; height: 16px; }
+
+.icon-btn.primary {
+  width: 2.15rem;
+  height: 2.15rem;
+  background: var(--amber);
+  border-color: var(--amber);
+  color: var(--amber-ink);
+}
+.icon-btn.primary:hover { background: color-mix(in srgb, var(--amber) 85%, white); color: var(--amber-ink); }
+.icon-btn.primary svg { width: 16px; height: 16px; }
+.icon-btn.primary.loading { cursor: default; }
+.icon-btn.primary.loading:hover { background: var(--amber); }
+.icon-btn.primary .spinner { width: 16px; height: 16px; }
+
+/* Both places a spinner appears (this button, the Queue button) sit on
+   an amber background, so one contrast treatment covers both. */
+.spinner {
+  display: inline-block;
+  width: 13px;
+  height: 13px;
+  border: 2px solid color-mix(in srgb, var(--amber-ink) 30%, transparent);
+  border-top-color: var(--amber-ink);
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .spinner { animation-duration: 1.6s; }
+}
+
+.icon-btn.danger { color: var(--danger); }
+.icon-btn.danger:hover { border-color: var(--danger); color: var(--danger); }
+
+.volume {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-left: auto;
+  color: var(--moon-dim);
+}
+.volume svg { width: 15px; height: 15px; flex: none; }
+.volume output {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 0.75rem;
+  width: 2.4em;
+  text-align: right;
+}
+
+input[type=range] {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 8.5rem;
+  height: 3px;
+  background: var(--border);
+  outline-offset: 4px;
+}
+input[type=range]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: var(--amber);
+  cursor: pointer;
+}
+input[type=range]::-moz-range-thumb {
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: var(--amber);
+  cursor: pointer;
+  border: none;
+}
+
+/* --- Segmented control (loop mode) --- */
+.segmented {
+  display: inline-flex;
+}
+.segmented form + form { margin-left: -1px; }
+.segmented button {
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--moon-dim);
+  font-family: var(--font-body);
+  font-size: 0.78rem;
+  padding: 0.28rem 0.65rem;
+  cursor: pointer;
+  position: relative;
+  transition: color 0.15s, border-color 0.15s;
+}
+.segmented button:hover { color: var(--moon); }
+.segmented button.active { color: var(--amber); border-color: var(--amber); font-weight: 600; z-index: 1; }
+
+.loop-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin-top: 1rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border);
+  font-size: 0.8rem;
+  color: var(--moon-dim);
+}
+
+/* --- Queue search + list --- */
+.play-form {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 1.4rem;
+}
+.play-form input[type=text] { flex: 1; }
+.play-form button.primary { display: inline-flex; align-items: center; justify-content: center; gap: 0.45rem; }
+/* htmx's own default indicator CSS only toggles opacity, so the spinner
+   still reserves its layout space while hidden — pushing "Queue" left of
+   center at rest. Hiding it outright until the request is in flight
+   (htmx adds .htmx-request directly to #queue-spinner, the hx-indicator
+   target) lets the button center on just the text the rest of the time. */
+.play-form .spinner { display: none; }
+.play-form .spinner.htmx-request { display: inline-block; }
+
+.queue-list {
+  list-style: none;
+  margin: 1rem 0 0;
+  padding: 0;
+  display: grid;
+  gap: 0.4rem;
+}
+
+.queue-list li {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.4rem 0.6rem;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  animation: queue-item-in 0.35s cubic-bezier(0.16, 1, 0.3, 1) both;
+  /* Grid items default to min-width:auto, same trap as flex items — without
+     this a long unbroken title refuses to shrink and pushes the row (and
+     the card) wider than its box instead of eliding. */
+  min-width: 0;
+}
+.queue-list li:hover { background: color-mix(in srgb, var(--amber) 8%, var(--panel-2)); }
+/* #queue-section re-renders the whole list on every change (see
+   handleEvents in api.go), so every row is technically a fresh element —
+   staggering the entrance by position reads as one cascading update
+   rather than the whole list flashing at once. */
+.queue-list li:nth-child(1) { animation-delay: 0s; }
+.queue-list li:nth-child(2) { animation-delay: 0.04s; }
+.queue-list li:nth-child(3) { animation-delay: 0.08s; }
+.queue-list li:nth-child(4) { animation-delay: 0.12s; }
+.queue-list li:nth-child(5) { animation-delay: 0.16s; }
+.queue-list li:nth-child(6) { animation-delay: 0.2s; }
+.queue-list li:nth-child(n+7) { animation-delay: 0.24s; }
+
+@keyframes queue-item-in {
+  from { opacity: 0; transform: translateX(8px) scale(0.98); }
+  to { opacity: 1; transform: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .queue-list li { animation: none; }
+}
+
+.queue-list .idx {
+  color: var(--moon-dim);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 0.76rem;
+  width: 1.3rem;
+  text-align: right;
+  flex: none;
+}
+
+.drag-handle {
+  flex: none;
+  display: flex;
+  align-items: center;
+  color: var(--border);
+  cursor: grab;
+  touch-action: none;
+}
+.queue-list li:hover .drag-handle { color: var(--moon-dim); }
+.drag-handle svg { width: 15px; height: 15px; }
+.queue-list li.no-anim { animation: none; }
+.queue-list li.dragging {
+  opacity: 0.4;
+  cursor: grabbing;
+}
+
+.queue-thumb, .queue-thumb-placeholder {
+  width: 34px;
+  height: 34px;
+  flex: none;
+  object-fit: cover;
+  background: var(--panel);
+  border: 1px solid var(--border);
+}
+
+.queue-list .meta, .history-list .meta { flex: 1; min-width: 0; }
+.queue-list .title, .history-list .title { font-size: 0.85rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.queue-list .artist, .history-list .artist { color: var(--moon-dim); font-size: 0.78rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.queue-list form, .history-list form { flex: none; }
+
+.history-section {
+  margin-top: 1rem;
+  border-top: 1px solid var(--border);
+  padding-top: 0.75rem;
+}
+.history-section summary {
+  cursor: pointer;
+  color: var(--moon-dim);
+  font-size: 0.76rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  user-select: none;
+}
+.history-section summary:hover { color: var(--moon); }
+.history-list {
+  list-style: none;
+  margin: 0.75rem 0 0;
+  padding: 0;
+  display: grid;
+  gap: 0.4rem;
+}
+.history-list li {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.4rem 0.6rem;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  min-width: 0;
+  opacity: 0.75;
+}
+.history-list li:hover { opacity: 1; }
+
+.icon-btn.small {
+  width: 1.7rem;
+  height: 1.7rem;
+  flex: none;
+}
+.icon-btn.small svg { width: 13px; height: 13px; }
+
+.empty { color: var(--moon-dim); }
+
+/* --- Channel row (de-emphasized, secondary) --- */
+.channel-row {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  margin-top: 1.4rem;
+  padding-top: 1.1rem;
+  border-top: 1px solid var(--border);
+}
+
+/* --- Form controls shared across the GUI --- */
+button, input[type=submit] {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  color: var(--moon);
+  padding: 0.5rem 0.9rem;
+  cursor: pointer;
+  font-family: var(--font-body);
+  font-size: 0.85rem;
+  font-weight: 500;
+  transition: border-color 0.15s, background-color 0.15s, color 0.15s;
+}
+button:hover { border-color: var(--amber); color: var(--amber); }
+/* .primary/.danger also match the Discord login <a> (styled as a button,
+   not a real <button>), not just button.primary/button.danger. */
+button.primary, .primary { background: var(--amber); border-color: var(--amber); color: var(--amber-ink); font-weight: 700; }
+button.primary:hover, .primary:hover { background: color-mix(in srgb, var(--amber) 85%, white); color: var(--amber-ink); }
+button.danger, .danger { color: var(--danger); }
+button.danger:hover, .danger:hover { border-color: var(--danger); color: var(--danger); }
+
+form.inline { display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center; }
+
+input[type=text], input[type=number], input[type=password], select {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  color: var(--moon);
+  padding: 0.5rem 0.75rem;
+  font-family: var(--font-body);
+  font-size: 0.85rem;
+}
+input[type=text]:focus, input[type=number]:focus, input[type=password]:focus, select:focus {
+  outline: none;
+  border-color: var(--amber);
+}
+
+.login-card { max-width: 360px; margin: 4rem auto; text-align: center; }
+.login-card .eq { margin: 0 auto 1rem; }
+
+.discord-login {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  padding: 0.6rem 1rem;
+  text-decoration: none;
+  box-sizing: border-box;
+}
+.login-divider { color: var(--moon-dim); font-size: 0.78rem; margin: 0.9rem 0; }
+
+.toast {
+  position: fixed;
+  top: 1rem;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 100;
+  max-width: 90vw;
+  pointer-events: none;
+}
+.toast:not(:empty) {
+  background: color-mix(in srgb, var(--danger) 16%, var(--panel));
+  color: var(--moon);
+  border: 1px solid var(--danger);
+  padding: 0.6rem 1rem;
+  font-size: 0.85rem;
+  animation: toast-fade 4s forwards;
+}
+@keyframes toast-fade {
+  0%, 80% { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+@media (max-width: 760px) {
+  html, body { font-size: 15px; }
+  .sidebar { display: none; }
+}
+
+@media (max-width: 480px) {
+  main { padding: 1.1rem 1rem 3rem; }
+  .transport { flex-wrap: wrap; }
+  .volume { margin-left: 0; width: 100%; }
+  input[type=range] { width: 100%; }
+}
