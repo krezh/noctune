@@ -352,15 +352,101 @@
 </div>
 {{end}}
 
+{{define "suggest-list"}}
+{{range .}}
+<li role="option" tabindex="-1" data-url="{{.WatchURL}}">
+  {{if .ThumbnailURL}}
+    <img class="suggest-thumb" src="{{.ThumbnailURL}}" alt="">
+  {{else}}
+    <span class="suggest-thumb-placeholder"></span>
+  {{end}}
+  <span class="suggest-meta">
+    <span class="suggest-title">{{.Title}}</span>
+    <span class="suggest-uploader">{{.Uploader}}</span>
+  </span>
+</li>
+{{end}}
+{{end}}
+
 {{define "panel-queue"}}
 <div id="queue-section" hx-swap-oob="true">
-  <form class="play-form" hx-post="/g/{{.GuildID}}/play" hx-indicator="#queue-spinner" hx-on::before-request="this.reset()">
-    <input type="text" id="query-input" hx-preserve="true" name="query" placeholder="Search, YouTube link, or Spotify link" required>
+  <form class="play-form" hx-post="/g/{{.GuildID}}/play" hx-indicator="#queue-spinner"
+        hx-on::before-request="if (event.target === this) { this.reset(); document.getElementById('suggest-list').innerHTML=''; }">
+    <div class="search-wrap">
+      <input type="text" id="query-input" hx-preserve="true" name="query" placeholder="Search, YouTube link, or Spotify link"
+             autocomplete="off" required
+             hx-get="/g/{{.GuildID}}/suggest" hx-trigger="input changed delay:300ms" hx-sync="this:replace"
+             hx-target="#suggest-list" hx-swap="innerHTML">
+      <ul id="suggest-list" class="suggest-list" role="listbox" hx-preserve="true"></ul>
+    </div>
     <button class="primary" type="submit">
       Queue
       <span id="queue-spinner" class="spinner htmx-indicator" aria-hidden="true"></span>
     </button>
   </form>
+  <script>
+  (function () {
+    var input = document.getElementById('query-input');
+    var list = document.getElementById('suggest-list');
+    if (!input || !list || input.dataset.suggestBound) return;
+    input.dataset.suggestBound = '1';
+
+    var activeIndex = -1;
+
+    function items() {
+      return Array.prototype.slice.call(list.querySelectorAll('li'));
+    }
+
+    function setActive(i) {
+      var els = items();
+      if (!els.length) return;
+      els.forEach(function (li) { li.classList.remove('active'); });
+      activeIndex = (i + els.length) % els.length;
+      els[activeIndex].classList.add('active');
+      els[activeIndex].scrollIntoView({ block: 'nearest' });
+    }
+
+    function closeList() {
+      list.innerHTML = '';
+      activeIndex = -1;
+    }
+
+    function selectItem(li) {
+      input.value = li.dataset.url || '';
+      closeList();
+      input.focus();
+    }
+
+    // mousedown (not click), with preventDefault, so choosing a suggestion
+    // never blurs the input first — a click alone would fire the input's
+    // blur handler before this listener ran, closing the list out from
+    // under the click.
+    list.addEventListener('mousedown', function (e) {
+      var li = e.target.closest('li');
+      if (!li) return;
+      e.preventDefault();
+      selectItem(li);
+    });
+
+    input.addEventListener('keydown', function (e) {
+      var els = items();
+      if (e.key === 'ArrowDown' && els.length) {
+        e.preventDefault();
+        setActive(activeIndex + 1);
+      } else if (e.key === 'ArrowUp' && els.length) {
+        e.preventDefault();
+        setActive(activeIndex - 1);
+      } else if (e.key === 'Enter' && activeIndex >= 0 && els[activeIndex]) {
+        e.preventDefault();
+        selectItem(els[activeIndex]);
+      } else if (e.key === 'Escape') {
+        closeList();
+      }
+    });
+
+    input.addEventListener('blur', closeList);
+  })();
+  </script>
 
   {{if .State.Queue}}
   <ul class="queue-list" data-reorder-url="/g/{{.GuildID}}/queue/reorder">

@@ -54,6 +54,39 @@ type ytDlpEntry struct {
 	Duration   float64 `json:"duration"`
 	WebpageURL string  `json:"webpage_url"`
 	Thumbnail  string  `json:"thumbnail"`
+	// Thumbnails is only populated by --flat-playlist search results (see
+	// SearchList) — a full run() lookup instead fills the singular
+	// Thumbnail field above.
+	Thumbnails []struct {
+		URL string `json:"url"`
+	} `json:"thumbnails"`
+}
+
+// toResult applies the same uploader/watch-URL/thumbnail fallbacks
+// regardless of whether the entry came from a full run() lookup (which
+// has Thumbnail but no Thumbnails) or a flat SearchList result (the
+// reverse).
+func (e ytDlpEntry) toResult() *Result {
+	uploader := e.Uploader
+	if uploader == "" {
+		uploader = e.Channel
+	}
+	watchURL := e.WebpageURL
+	if watchURL == "" {
+		watchURL = "https://www.youtube.com/watch?v=" + e.ID
+	}
+	thumb := e.Thumbnail
+	if thumb == "" && len(e.Thumbnails) > 0 {
+		thumb = e.Thumbnails[0].URL
+	}
+	return &Result{
+		ID:           e.ID,
+		Title:        e.Title,
+		Uploader:     uploader,
+		WatchURL:     watchURL,
+		ThumbnailURL: thumb,
+		Duration:     time.Duration(e.Duration * float64(time.Second)),
+	}
 }
 
 // IsURL reports whether input looks like a youtube.com/youtu.be link
@@ -71,6 +104,44 @@ func IsURL(input string) bool {
 // Search returns metadata for the top result of a free-text query.
 func (c *Client) Search(ctx context.Context, query string) (*Result, error) {
 	return c.run(ctx, "ytsearch1:"+query)
+}
+
+// SearchList returns up to n lightweight results for a free-text query,
+// each with a thumbnail, to back the web GUI's live autocomplete
+// dropdown. It uses yt-dlp's --flat-playlist extraction, which parses the
+// search-results page itself instead of resolving every video
+// individually — unlike Search (used only at actual queue time), that's
+// fast enough to run once per debounced keystroke pause.
+func (c *Client) SearchList(ctx context.Context, query string, n int) ([]*Result, error) {
+	ctx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, c.ytDlpPath,
+		"-j",
+		"--flat-playlist",
+		"--no-warnings",
+		"--skip-download",
+		fmt.Sprintf("ytsearch%d:%s", n, query),
+	)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("yt-dlp search %q: %w: %s", query, err, stderr.String())
+	}
+
+	var results []*Result
+	for line := range strings.SplitSeq(strings.TrimSpace(stdout.String()), "\n") {
+		if line == "" {
+			continue
+		}
+		var entry ytDlpEntry
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			continue
+		}
+		results = append(results, entry.toResult())
+	}
+	return results, nil
 }
 
 // Resolve returns metadata for a direct YouTube URL.
@@ -248,22 +319,5 @@ func (c *Client) run(ctx context.Context, target string) (*Result, error) {
 	if err := json.Unmarshal([]byte(line), &entry); err != nil {
 		return nil, fmt.Errorf("parse yt-dlp output: %w", err)
 	}
-
-	uploader := entry.Uploader
-	if uploader == "" {
-		uploader = entry.Channel
-	}
-	watchURL := entry.WebpageURL
-	if watchURL == "" {
-		watchURL = "https://www.youtube.com/watch?v=" + entry.ID
-	}
-
-	return &Result{
-		ID:           entry.ID,
-		Title:        entry.Title,
-		Uploader:     uploader,
-		WatchURL:     watchURL,
-		ThumbnailURL: entry.Thumbnail,
-		Duration:     time.Duration(entry.Duration * float64(time.Second)),
-	}, nil
+	return entry.toResult(), nil
 }

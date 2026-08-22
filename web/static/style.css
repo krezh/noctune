@@ -561,7 +561,6 @@ input[type=range]::-moz-range-thumb {
   gap: 0.5rem;
   margin-top: 1.4rem;
 }
-.play-form input[type=text] { flex: 1; }
 .play-form button.primary { display: inline-flex; align-items: center; justify-content: center; gap: 0.45rem; }
 /* htmx's own default indicator CSS only toggles opacity, so the spinner
    still reserves its layout space while hidden — pushing "Queue" left of
@@ -570,6 +569,55 @@ input[type=range]::-moz-range-thumb {
    target) lets the button center on just the text the rest of the time. */
 .play-form .spinner { display: none; }
 .play-form .spinner.htmx-request { display: inline-block; }
+
+/* --- Search autocomplete dropdown --- */
+.search-wrap { position: relative; flex: 1; }
+.search-wrap input[type=text] { width: 100%; }
+.suggest-list {
+  position: absolute;
+  top: calc(100% + 2px);
+  left: 0;
+  right: 0;
+  z-index: 20;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  max-height: 220px;
+  overflow-y: auto;
+  scrollbar-width: none;
+}
+.suggest-list::-webkit-scrollbar { display: none; }
+.suggest-list:empty { display: none; }
+.suggest-list li {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.4rem 0.6rem;
+  font-size: 0.85rem;
+  color: var(--moon);
+  cursor: pointer;
+  border-bottom: 1px solid var(--border);
+}
+.suggest-list li:last-child { border-bottom: none; }
+.suggest-list li:hover,
+.suggest-list li.active {
+  background: color-mix(in srgb, var(--amber) 8%, var(--panel-2));
+}
+.suggest-thumb, .suggest-thumb-placeholder {
+  width: 34px;
+  height: 34px;
+  flex: none;
+  object-fit: cover;
+  background: var(--panel);
+  border: 1px solid var(--border);
+}
+.suggest-meta { flex: 1; min-width: 0; }
+.suggest-title { font-size: 0.85rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.suggest-uploader { color: var(--moon-dim); font-size: 0.78rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.suggest-list li:hover .suggest-title,
+.suggest-list li.active .suggest-title { color: var(--amber); }
 
 .queue-list {
   list-style: none;

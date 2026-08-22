@@ -40,6 +40,8 @@ import (
 	"github.com/krezh/noctune/internal/config"
 	"github.com/krezh/noctune/internal/player"
 	"github.com/krezh/noctune/internal/resolve"
+	"github.com/krezh/noctune/internal/spotify"
+	"github.com/krezh/noctune/internal/youtube"
 	"github.com/krezh/noctune/web"
 )
 
@@ -307,6 +309,7 @@ func (srv *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /g/{guildID}/join", srv.requireAuth(srv.requireGuildAccess(srv.handleJoin)))
 	mux.HandleFunc("POST /g/{guildID}/leave", srv.requireAuth(srv.requireGuildAccess(srv.requireVoicePresence(srv.handleLeave))))
 	mux.HandleFunc("POST /g/{guildID}/play", srv.requireAuth(srv.requireGuildAccess(srv.handlePlay)))
+	mux.HandleFunc("GET /g/{guildID}/suggest", srv.requireAuth(srv.requireGuildAccess(srv.handleSuggest)))
 	mux.HandleFunc("POST /g/{guildID}/pause", srv.requireAuth(srv.requireGuildAccess(srv.requireVoicePresence(srv.handlePause))))
 	mux.HandleFunc("POST /g/{guildID}/resume", srv.requireAuth(srv.requireGuildAccess(srv.requireVoicePresence(srv.handleResume))))
 	mux.HandleFunc("POST /g/{guildID}/skip", srv.requireAuth(srv.requireGuildAccess(srv.requireVoicePresence(srv.handleSkip))))
@@ -733,6 +736,35 @@ func (srv *Server) handlePlay(w http.ResponseWriter, r *http.Request) {
 	}
 	srv.queueSearch(guildID, query, requestedBy, requestedByAvatarURL)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleSuggest backs the search box's live autocomplete: real YouTube
+// search results (title, uploader, thumbnail), the same ones typing the
+// query into YouTube directly and looking at the results page would
+// surface. Pasted YouTube/Spotify links skip the lookup entirely — they
+// aren't free-text queries, so there's nothing to suggest. Errors
+// (yt-dlp hiccup, YouTube rate limit) degrade to an empty list rather
+// than surfacing to the user; autocomplete is a nicety, not something
+// worth a toast over.
+func (srv *Server) handleSuggest(w http.ResponseWriter, r *http.Request) {
+	// htmx names a GET param after the triggering element's own name
+	// attribute, and #query-input shares "query" with the form's POST
+	// /play field — so this reads "query", not the "q" a hand-typed GET
+	// would use.
+	query := strings.TrimSpace(r.URL.Query().Get("query"))
+	var results []*youtube.Result
+	if query != "" && !youtube.IsURL(query) {
+		if _, _, ok := spotify.ParseURL(query); !ok {
+			ctx, cancel := context.WithTimeout(r.Context(), 6*time.Second)
+			defer cancel()
+			res, err := srv.resolver.Suggest(ctx, query, 6)
+			if err != nil {
+				log.Printf("noctune: suggest %q: %v", query, err)
+			}
+			results = res
+		}
+	}
+	srv.render(w, "suggest-list", results)
 }
 
 func (srv *Server) handlePause(w http.ResponseWriter, r *http.Request) {

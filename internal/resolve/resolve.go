@@ -80,6 +80,14 @@ func (r *Resolver) Resolve(ctx context.Context, query, requestedBy, requestedByA
 	return []*player.Track{youtubeToPlayerTrack(res, requestedBy, requestedByAvatarURL)}, nil
 }
 
+// Suggest returns up to n lightweight YouTube search results (with
+// thumbnails) for a partial free-text query. It backs the web GUI's live
+// autocomplete dropdown, not queuing — callers still queue by feeding the
+// chosen result's WatchURL through Resolve, same as any pasted link.
+func (r *Resolver) Suggest(ctx context.Context, query string, n int) ([]*youtube.Result, error) {
+	return r.youtube.SearchList(ctx, query, n)
+}
+
 func (r *Resolver) spotifyToPlayerTrack(ctx context.Context, st *spotify.Track, requestedBy, requestedByAvatarURL string) (*player.Track, error) {
 	yr, err := r.youtube.Search(ctx, st.Artist+" "+st.Title)
 	if err != nil {
