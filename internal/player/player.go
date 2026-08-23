@@ -117,15 +117,15 @@ type GuildPlayer struct {
 	resolver StreamResolver
 	cfg      *config.Config
 
-	mu             sync.Mutex
-	voiceConn      voiceapi.Conn
-	voiceChannelID string
-	queue          []*Track
-	current        *Track
-	history        []*Track
-	status         Status
-	volume         int
-	loop           LoopMode
+	mu              sync.Mutex
+	voiceConn       voiceapi.Conn
+	voiceChannelID  string
+	queue           []*Track
+	current         *Track
+	history         []*Track
+	status          Status
+	volume          int
+	loop            LoopMode
 	handle          *audio.Handle
 	idleTimer       *time.Timer
 	subs            map[chan State]struct{}
