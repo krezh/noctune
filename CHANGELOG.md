@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.4](https://github.com/krezh/noctune/compare/0.1.3...0.1.4) (2026-08-23)
+
+
+### Bug Fixes
+
+* **bot:** run voice channel status update async to unblock presence updates ([2b0d54e](https://github.com/krezh/noctune/commit/2b0d54e4ef48fd2a88d108918f4b8e790e631563))
+* **web:** double player max-width from 640px to 1280px ([dd23abb](https://github.com/krezh/noctune/commit/dd23abbfdfa9cbd57582671f428e0f8b349a86d9))
+
 ## [0.1.3](https://github.com/krezh/noctune/compare/0.1.2...0.1.3) (2026-08-23)
 
 
