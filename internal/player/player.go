@@ -102,7 +102,8 @@ type State struct {
 	// History is tracks that have started playing, most recent first,
 	// capped at historyMaxSize. It's for display and re-adding a track —
 	// nothing reads it to drive playback.
-	History []*Track
+	History         []*Track
+	LoadingPlaylist bool
 }
 
 // historyMaxSize bounds GuildPlayer.history — like everything else in
@@ -125,9 +126,10 @@ type GuildPlayer struct {
 	status         Status
 	volume         int
 	loop           LoopMode
-	handle         *audio.Handle
-	idleTimer      *time.Timer
-	subs           map[chan State]struct{}
+	handle          *audio.Handle
+	idleTimer       *time.Timer
+	subs            map[chan State]struct{}
+	loadingPlaylist bool
 
 	startOnce  sync.Once
 	playSignal chan struct{}
@@ -464,16 +466,26 @@ func (gp *GuildPlayer) Snapshot() State {
 		pos = gp.handle.Position()
 	}
 	return State{
-		GuildID:        gp.GuildID,
-		VoiceChannelID: gp.voiceChannelID,
-		Status:         gp.status,
-		Volume:         gp.volume,
-		Loop:           gp.loop,
-		Current:        gp.current,
-		Position:       pos,
-		Queue:          q,
-		History:        h,
+		GuildID:         gp.GuildID,
+		VoiceChannelID:  gp.voiceChannelID,
+		Status:          gp.status,
+		Volume:          gp.volume,
+		Loop:            gp.loop,
+		Current:         gp.current,
+		Position:        pos,
+		Queue:           q,
+		History:         h,
+		LoadingPlaylist: gp.loadingPlaylist,
 	}
+}
+
+// SetLoadingPlaylist marks whether a playlist is actively being resolved
+// and streamed into the queue. Callers must call it with false when done.
+func (gp *GuildPlayer) SetLoadingPlaylist(loading bool) {
+	gp.mu.Lock()
+	gp.loadingPlaylist = loading
+	gp.mu.Unlock()
+	gp.notify()
 }
 
 // Subscribe returns a channel that receives the latest state snapshot

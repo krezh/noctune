@@ -448,6 +448,12 @@
   })();
   </script>
 
+  {{if .State.LoadingPlaylist}}
+  <div class="queue-loading">
+    <span class="spinner" aria-hidden="true"></span>
+    Loading playlist…
+  </div>
+  {{end}}
   {{if .State.Queue}}
   <ul class="queue-list" data-reorder-url="/g/{{.GuildID}}/queue/reorder">
     {{range $i, $t := .State.Queue}}

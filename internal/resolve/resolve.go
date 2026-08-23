@@ -66,6 +66,17 @@ func (r *Resolver) Resolve(ctx context.Context, query, requestedBy, requestedByA
 	}
 
 	if youtube.IsURL(query) {
+		if youtube.IsPlaylistURL(query) {
+			results, err := r.youtube.ResolvePlaylist(ctx, query)
+			if err != nil {
+				return nil, fmt.Errorf("resolve youtube playlist: %w", err)
+			}
+			out := make([]*player.Track, 0, len(results))
+			for _, res := range results {
+				out = append(out, youtubeToPlayerTrack(res, requestedBy, requestedByAvatarURL))
+			}
+			return out, nil
+		}
 		res, err := r.youtube.Resolve(ctx, query)
 		if err != nil {
 			return nil, fmt.Errorf("resolve youtube url: %w", err)
@@ -111,4 +122,64 @@ func (r *Resolver) spotifyBatchToPlayerTracks(ctx context.Context, sts []*spotif
 
 func youtubeToPlayerTrack(res *youtube.Result, requestedBy, requestedByAvatarURL string) *player.Track {
 	return player.NewTrack(res.Title, res.Uploader, "", res.ThumbnailURL, res.WatchURL, res.WatchURL, res.Duration, player.SourceYouTube, requestedBy, requestedByAvatarURL)
+}
+
+// IsMultiTrack reports whether query will resolve to more than one track —
+// a YouTube playlist URL or a Spotify album/playlist link.
+func IsMultiTrack(query string) bool {
+	if youtube.IsURL(query) && youtube.IsPlaylistURL(query) {
+		return true
+	}
+	kind, _, ok := spotify.ParseURL(query)
+	return ok && (kind == spotify.KindAlbum || kind == spotify.KindPlaylist)
+}
+
+// ResolveEach calls fn for each resolved track as soon as it's available.
+// For YouTube playlists this streams one entry per yt-dlp output line; for
+// Spotify albums/playlists it resolves metadata first then finds YouTube
+// audio serially; everything else resolves fully then calls fn once.
+func (r *Resolver) ResolveEach(ctx context.Context, query, requestedBy, requestedByAvatarURL string, fn func(*player.Track)) error {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return fmt.Errorf("empty query")
+	}
+
+	if youtube.IsURL(query) && youtube.IsPlaylistURL(query) {
+		return r.youtube.ResolvePlaylistEach(ctx, query, func(res *youtube.Result) {
+			fn(youtubeToPlayerTrack(res, requestedBy, requestedByAvatarURL))
+		})
+	}
+
+	if kind, id, ok := spotify.ParseURL(query); ok && (kind == spotify.KindAlbum || kind == spotify.KindPlaylist) {
+		var (
+			sts []*spotify.Track
+			err error
+		)
+		if kind == spotify.KindAlbum {
+			sts, err = r.spotify.ResolveAlbum(ctx, id)
+		} else {
+			sts, err = r.spotify.ResolvePlaylist(ctx, id)
+		}
+		if err != nil {
+			return fmt.Errorf("resolve spotify %s: %w", kind, err)
+		}
+		for _, st := range sts {
+			t, terr := r.spotifyToPlayerTrack(ctx, st, requestedBy, requestedByAvatarURL)
+			if terr != nil {
+				log.Printf("noctune: skipping %q: %v", st.Title, terr)
+				continue
+			}
+			fn(t)
+		}
+		return nil
+	}
+
+	tracks, err := r.Resolve(ctx, query, requestedBy, requestedByAvatarURL)
+	if err != nil {
+		return err
+	}
+	for _, t := range tracks {
+		fn(t)
+	}
+	return nil
 }

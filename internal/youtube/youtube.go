@@ -6,6 +6,7 @@
 package youtube
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -99,6 +100,84 @@ func IsURL(input string) bool {
 	host := strings.TrimPrefix(strings.ToLower(u.Host), "www.")
 	host = strings.TrimPrefix(host, "m.")
 	return host == "youtube.com" || host == "youtu.be" || host == "music.youtube.com"
+}
+
+// IsPlaylistURL reports whether input is a bare YouTube playlist URL
+// (youtube.com/playlist?list=…) as opposed to a watch URL that merely
+// references a playlist alongside a video ID.
+func IsPlaylistURL(input string) bool {
+	u, err := url.Parse(strings.TrimSpace(input))
+	if err != nil || u.Host == "" {
+		return false
+	}
+	host := strings.TrimPrefix(strings.ToLower(u.Host), "www.")
+	host = strings.TrimPrefix(host, "m.")
+	if host != "youtube.com" && host != "music.youtube.com" {
+		return false
+	}
+	return strings.TrimPrefix(u.Path, "/") == "playlist"
+}
+
+// ResolvePlaylistEach calls fn for each video in a YouTube playlist URL as
+// yt-dlp outputs it, rather than buffering all results first. fn is called
+// from the same goroutine in order; return from ResolvePlaylistEach means
+// all entries have been delivered (or an error aborted the run).
+func (c *Client) ResolvePlaylistEach(ctx context.Context, playlistURL string, fn func(*Result)) error {
+	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, c.ytDlpPath,
+		"-j",
+		"--flat-playlist",
+		"--no-warnings",
+		"--skip-download",
+		playlistURL,
+	)
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return fmt.Errorf("yt-dlp stdout pipe: %w", err)
+	}
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("start yt-dlp: %w", err)
+	}
+
+	scanner := bufio.NewScanner(stdout)
+	scanner.Buffer(make([]byte, 1<<20), 1<<20)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		var entry ytDlpEntry
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			continue
+		}
+		fn(entry.toResult())
+	}
+	if err := scanner.Err(); err != nil {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		return fmt.Errorf("yt-dlp playlist read: %w", err)
+	}
+
+	if err := cmd.Wait(); err != nil && stderr.Len() > 0 {
+		return fmt.Errorf("yt-dlp playlist %q: %w: %s", playlistURL, err, stderr.String())
+	}
+	return nil
+}
+
+// ResolvePlaylist returns all videos in a YouTube playlist URL. For
+// streaming results as they arrive, use ResolvePlaylistEach instead.
+func (c *Client) ResolvePlaylist(ctx context.Context, playlistURL string) ([]*Result, error) {
+	var out []*Result
+	if err := c.ResolvePlaylistEach(ctx, playlistURL, func(r *Result) {
+		out = append(out, r)
+	}); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 // Search returns metadata for the top result of a free-text query.

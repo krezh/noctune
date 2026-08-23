@@ -175,35 +175,54 @@ func (b *Bot) handlePlay(event *events.ApplicationCommandInteractionCreate, guil
 		if u := event.User().AvatarURL(); u != nil {
 			avatarURL = *u
 		}
-		tracks, err := b.resolver.Resolve(context.Background(), query, event.User().Username, avatarURL)
-		if err != nil || len(tracks) == 0 {
-			b.followup(event, fmt.Sprintf("Couldn't find anything for %q.", query))
-			return
-		}
-		for _, t := range tracks {
-			if err := gp.Enqueue(t); err != nil {
-				b.followup(event, err.Error())
+		var (
+			first      *player.Track
+			trackCount int
+			enqueueErr error
+		)
+		resolveErr := b.resolver.ResolveEach(context.Background(), query, event.User().Username, avatarURL, func(t *player.Track) {
+			if enqueueErr != nil {
 				return
 			}
+			if first == nil {
+				first = t
+			}
+			if err := gp.Enqueue(t); err != nil {
+				enqueueErr = err
+				return
+			}
+			trackCount++
+		})
+		if trackCount == 0 {
+			if enqueueErr != nil {
+				b.followup(event, enqueueErr.Error())
+			} else {
+				b.followup(event, fmt.Sprintf("Couldn't find anything for %q.", query))
+			}
+			return
 		}
 
 		var embed discord.Embed
-		if len(tracks) == 1 {
-			embed = trackEmbed(tracks[0]).WithAuthorName("Added to queue")
+		if trackCount == 1 {
+			embed = trackEmbed(first).WithAuthorName("Added to queue")
 		} else {
+			label := fmt.Sprintf("Added %d tracks to queue", trackCount)
+			if resolveErr != nil {
+				label += " (some tracks skipped)"
+			}
 			embed = discord.NewEmbed().
 				WithColor(embedColor).
-				WithAuthorName(fmt.Sprintf("Added %d tracks to queue", len(tracks))).
-				WithTitle(tracks[0].Title).
-				WithDescription(tracks[0].Artist)
-			if tracks[0].SourceURL != "" {
-				embed = embed.WithURL(tracks[0].SourceURL)
+				WithAuthorName(label).
+				WithTitle(first.Title).
+				WithDescription(first.Artist)
+			if first.SourceURL != "" {
+				embed = embed.WithURL(first.SourceURL)
 			}
-			if tracks[0].ArtworkURL != "" {
-				embed = embed.WithThumbnail(tracks[0].ArtworkURL)
+			if first.ArtworkURL != "" {
+				embed = embed.WithThumbnail(first.ArtworkURL)
 			}
-			if tracks[0].RequestedBy != "" {
-				embed = embed.AddField("Requested by", tracks[0].RequestedBy, true)
+			if first.RequestedBy != "" {
+				embed = embed.AddField("Requested by", first.RequestedBy, true)
 			}
 		}
 		if avatarURL != "" {

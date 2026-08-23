@@ -271,16 +271,20 @@ func (srv *Server) queueSearch(guildID, query, requestedBy, requestedByAvatarURL
 func (srv *Server) runSearchWorker(guildID string, ch <-chan searchJob) {
 	gp := srv.players.Get(guildID)
 	for job := range ch {
-		tracks, err := srv.resolver.Resolve(context.Background(), job.query, job.requestedBy, job.requestedByAvatarURL)
+		isMulti := resolve.IsMultiTrack(job.query)
+		if isMulti {
+			gp.SetLoadingPlaylist(true)
+		}
+		err := srv.resolver.ResolveEach(context.Background(), job.query, job.requestedBy, job.requestedByAvatarURL, func(t *player.Track) {
+			if err := gp.Enqueue(t); err != nil {
+				log.Printf("noctune: web enqueue %q: %v", t.Title, err)
+			}
+		})
+		if isMulti {
+			gp.SetLoadingPlaylist(false)
+		}
 		if err != nil {
 			log.Printf("noctune: web resolve %q: %v", job.query, err)
-			continue
-		}
-		for _, t := range tracks {
-			if err := gp.Enqueue(t); err != nil {
-				log.Printf("noctune: web enqueue %q: %v", job.query, err)
-				break
-			}
 		}
 	}
 }
