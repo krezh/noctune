@@ -135,11 +135,10 @@ func (b *Bot) handlePlay(event *events.ApplicationCommandInteractionCreate, guil
 		log.Printf("noctune: defer /play response: %v", err)
 		return
 	}
-	respond := func(content string) { b.followup(event, content) }
 
 	vs, ok := b.Client.Caches.VoiceState(*event.GuildID(), event.User().ID)
 	if !ok || vs.ChannelID == nil {
-		respond("Join a voice channel first.")
+		b.followup(event, "Join a voice channel first.")
 		return
 	}
 
@@ -153,7 +152,7 @@ func (b *Bot) handlePlay(event *events.ApplicationCommandInteractionCreate, guil
 		joinCtx, joinCancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer joinCancel()
 		if err := gp.Join(joinCtx, channelID); err != nil {
-			respond(fmt.Sprintf("Couldn't join your voice channel: %v", err))
+			b.followup(event, fmt.Sprintf("Couldn't join your voice channel: %v", err))
 			return
 		}
 
@@ -168,23 +167,42 @@ func (b *Bot) handlePlay(event *events.ApplicationCommandInteractionCreate, guil
 		}
 		tracks, err := b.resolver.Resolve(context.Background(), query, event.User().Username, avatarURL)
 		if err != nil || len(tracks) == 0 {
-			respond(fmt.Sprintf("Couldn't find anything for %q.", query))
+			b.followup(event, fmt.Sprintf("Couldn't find anything for %q.", query))
 			return
 		}
 		for _, t := range tracks {
 			if err := gp.Enqueue(t); err != nil {
-				respond(err.Error())
+				b.followup(event, err.Error())
 				return
 			}
 		}
-		msg := fmt.Sprintf("Queued **%s** — %s", tracks[0].Title, tracks[0].Artist)
-		if len(tracks) > 1 {
-			msg = fmt.Sprintf("Queued %d tracks.", len(tracks))
+
+		var embed discord.Embed
+		if len(tracks) == 1 {
+			embed = trackEmbed(tracks[0]).WithAuthorName("Added to queue")
+		} else {
+			embed = discord.NewEmbed().
+				WithColor(embedColor).
+				WithAuthorName(fmt.Sprintf("Added %d tracks to queue", len(tracks))).
+				WithTitle(tracks[0].Title).
+				WithDescription(tracks[0].Artist)
+			if tracks[0].SourceURL != "" {
+				embed = embed.WithURL(tracks[0].SourceURL)
+			}
+			if tracks[0].ArtworkURL != "" {
+				embed = embed.WithThumbnail(tracks[0].ArtworkURL)
+			}
+			if tracks[0].RequestedBy != "" {
+				embed = embed.AddField("Requested by", tracks[0].RequestedBy, true)
+			}
+		}
+		if avatarURL != "" {
+			embed = embed.WithAuthorIcon(avatarURL)
 		}
 		if link := b.webGUILink(guildID); link != "" {
-			msg += "\n" + link
+			embed = embed.AddField("Web", "[Open noctune]("+link+")", true)
 		}
-		respond(msg)
+		b.followupEmbed(event, embed)
 	}()
 }
 
@@ -233,9 +251,17 @@ func (b *Bot) handleLeave(event *events.ApplicationCommandInteractionCreate, gui
 
 func (b *Bot) handleQueue(event *events.ApplicationCommandInteractionCreate, guildID string) {
 	st := b.players.Get(guildID).Snapshot()
+	e := discord.NewEmbed().WithColor(embedColor).WithTitle("Queue")
 	var sb strings.Builder
 	if st.Current != nil {
-		fmt.Fprintf(&sb, "**Now playing:** %s — %s\n\n", st.Current.Title, st.Current.Artist)
+		if st.Current.SourceURL != "" {
+			fmt.Fprintf(&sb, "**Now playing:** [%s](%s) — %s\n\n", st.Current.Title, st.Current.SourceURL, st.Current.Artist)
+		} else {
+			fmt.Fprintf(&sb, "**Now playing:** %s — %s\n\n", st.Current.Title, st.Current.Artist)
+		}
+		if st.Current.ArtworkURL != "" {
+			e = e.WithThumbnail(st.Current.ArtworkURL)
+		}
 	} else {
 		sb.WriteString("Nothing is playing.\n\n")
 	}
@@ -251,7 +277,7 @@ func (b *Bot) handleQueue(event *events.ApplicationCommandInteractionCreate, gui
 			fmt.Fprintf(&sb, "…and %d more", len(st.Queue)-n)
 		}
 	}
-	b.reply(event, sb.String())
+	b.replyEmbed(event, e.WithDescription(sb.String()))
 }
 
 func (b *Bot) handleNowPlaying(event *events.ApplicationCommandInteractionCreate, guildID string) {
@@ -260,7 +286,15 @@ func (b *Bot) handleNowPlaying(event *events.ApplicationCommandInteractionCreate
 		b.reply(event, "Nothing is playing.")
 		return
 	}
-	b.reply(event, fmt.Sprintf("**%s** — %s (%s, volume %d%%)", st.Current.Title, st.Current.Artist, st.Status, st.Volume))
+	t := st.Current
+	e := trackEmbed(t).WithAuthorName("Now Playing")
+	if t.Duration > 0 && st.Position > 0 {
+		pos := fmtDuration(st.Position.Round(time.Second)) + " / " + fmtDuration(t.Duration)
+		e = e.WithField(0, "Duration", pos, true)
+	}
+	e = e.AddField("Status", string(st.Status), true).
+		AddField("Volume", fmt.Sprintf("%d%%", st.Volume), true)
+	b.replyEmbed(event, e)
 }
 
 func (b *Bot) handleVolume(event *events.ApplicationCommandInteractionCreate, guildID string, data discord.SlashCommandInteractionData) {
@@ -278,14 +312,63 @@ func (b *Bot) handleLoop(event *events.ApplicationCommandInteractionCreate, guil
 	b.reply(event, fmt.Sprintf("Loop mode: %s", mode))
 }
 
+const embedColor = 0x5865F2
+
+func fmtDuration(d time.Duration) string {
+	d = d.Round(time.Second)
+	h := int(d.Hours())
+	m := int(d.Minutes()) % 60
+	s := int(d.Seconds()) % 60
+	if h > 0 {
+		return fmt.Sprintf("%d:%02d:%02d", h, m, s)
+	}
+	return fmt.Sprintf("%d:%02d", m, s)
+}
+
+func trackEmbed(t *player.Track) discord.Embed {
+	desc := t.Artist
+	if t.Album != "" && t.Album != t.Artist && t.Album != t.Title {
+		desc += " — " + t.Album
+	}
+	e := discord.NewEmbed().
+		WithColor(embedColor).
+		WithTitle(t.Title).
+		WithDescription(desc)
+	if t.SourceURL != "" {
+		e = e.WithURL(t.SourceURL)
+	}
+	if t.ArtworkURL != "" {
+		e = e.WithThumbnail(t.ArtworkURL)
+	}
+	if t.Duration > 0 {
+		e = e.AddField("Duration", fmtDuration(t.Duration), true)
+	}
+	if t.RequestedBy != "" {
+		e = e.AddField("Requested by", t.RequestedBy, true)
+	}
+	return e
+}
+
 func (b *Bot) reply(event *events.ApplicationCommandInteractionCreate, content string) {
 	if err := event.CreateMessage(discord.NewMessageCreate().WithContent(content)); err != nil {
 		log.Printf("noctune: respond to interaction: %v", err)
 	}
 }
 
+func (b *Bot) replyEmbed(event *events.ApplicationCommandInteractionCreate, embed discord.Embed) {
+	if err := event.CreateMessage(discord.NewMessageCreate().AddEmbeds(embed)); err != nil {
+		log.Printf("noctune: respond to interaction: %v", err)
+	}
+}
+
 func (b *Bot) followup(event *events.ApplicationCommandInteractionCreate, content string) {
 	if _, err := event.Client().Rest.CreateFollowupMessage(event.ApplicationID(), event.Token(), discord.NewMessageCreate().WithContent(content)); err != nil {
+		log.Printf("noctune: followup message: %v", err)
+	}
+}
+
+func (b *Bot) followupEmbed(event *events.ApplicationCommandInteractionCreate, embed discord.Embed) {
+	if _, err := event.Client().Rest.CreateFollowupMessage(event.ApplicationID(), event.Token(), discord.NewMessageCreate().AddEmbeds(embed)); err != nil {
 		log.Printf("noctune: followup message: %v", err)
 	}
 }
