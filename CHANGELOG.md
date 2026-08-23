@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.1.3](https://github.com/krezh/noctune/compare/0.1.2...0.1.3) (2026-08-23)
+
+
+### Features
+
+* **player:** stream playlist tracks into queue as they resolve ([ece7737](https://github.com/krezh/noctune/commit/ece773752a39dbe3b7cd89082bb9660f76c224ca))
+
+
+### Bug Fixes
+
+* **player:** gofmt alignment after adding loadingPlaylist field ([9fa6ee1](https://github.com/krezh/noctune/commit/9fa6ee19587c2c19dc7e1b4509e44f9d4a18d6dc))
+
 ## [0.1.2](https://github.com/krezh/noctune/compare/0.1.1...0.1.2) (2026-08-23)
 
 
