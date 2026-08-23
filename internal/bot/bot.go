@@ -7,7 +7,9 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/disgoorg/disgo"
@@ -16,6 +18,7 @@ import (
 	"github.com/disgoorg/disgo/discord"
 	"github.com/disgoorg/disgo/events"
 	"github.com/disgoorg/disgo/gateway"
+	discordrest "github.com/disgoorg/disgo/rest"
 	"github.com/disgoorg/disgo/voice"
 	"github.com/disgoorg/snowflake/v2"
 	"github.com/thomas-vilte/dave-go/session"
@@ -25,11 +28,16 @@ import (
 	"github.com/krezh/noctune/internal/resolve"
 )
 
+var voiceStatusEndpoint = discordrest.NewEndpoint(http.MethodPut, "/channels/{channel.id}/voice-status")
+
 type Bot struct {
 	Client   *bot.Client
 	players  *player.Manager
 	resolver *resolve.Resolver
 	cfg      *config.Config
+
+	watchMu       sync.Mutex
+	watchedGuilds map[string]struct{}
 }
 
 // NewClient creates the underlying disgo bot.Client with the intents and
@@ -56,10 +64,11 @@ func NewClient(cfg *config.Config) (*bot.Client, error) {
 
 func New(cfg *config.Config, client *bot.Client, players *player.Manager, resolver *resolve.Resolver) *Bot {
 	b := &Bot{
-		Client:   client,
-		players:  players,
-		resolver: resolver,
-		cfg:      cfg,
+		Client:        client,
+		players:       players,
+		resolver:      resolver,
+		cfg:           cfg,
+		watchedGuilds: make(map[string]struct{}),
 	}
 	client.EventManager.AddEventListeners(&events.ListenerAdapter{
 		OnReady:                         b.onReady,
@@ -155,6 +164,7 @@ func (b *Bot) handlePlay(event *events.ApplicationCommandInteractionCreate, guil
 			b.followup(event, fmt.Sprintf("Couldn't join your voice channel: %v", err))
 			return
 		}
+		go b.watchGuild(guildID)
 
 		// AvatarURL, not EffectiveAvatarURL: a user with no custom avatar set
 		// falls back to a differently-shaped Discord "default avatar" CDN
@@ -310,6 +320,77 @@ func (b *Bot) handleLoop(event *events.ApplicationCommandInteractionCreate, guil
 	mode := player.LoopMode(data.String("mode"))
 	b.players.Get(guildID).SetLoop(mode)
 	b.reply(event, fmt.Sprintf("Loop mode: %s", mode))
+}
+
+// watchGuild subscribes to a guild's player and keeps the bot presence and
+// voice channel status in sync with playback state. No-ops if already watching.
+func (b *Bot) watchGuild(guildID string) {
+	b.watchMu.Lock()
+	if _, ok := b.watchedGuilds[guildID]; ok {
+		b.watchMu.Unlock()
+		return
+	}
+	b.watchedGuilds[guildID] = struct{}{}
+	b.watchMu.Unlock()
+
+	ch, _ := b.players.Get(guildID).Subscribe() // intentionally no cancel; runs for bot lifetime
+
+	var lastChannelID string
+	for state := range ch {
+		channelID := state.VoiceChannelID
+		if channelID == "" {
+			channelID = lastChannelID
+		} else {
+			lastChannelID = channelID
+		}
+
+		if channelID != "" {
+			if state.Status == player.StatusPlaying {
+				b.setVoiceChannelStatus(channelID, "Jammin")
+			} else {
+				b.setVoiceChannelStatus(channelID, "")
+			}
+		}
+
+		if state.Status == player.StatusPlaying && state.Current != nil {
+			b.setPresence(state.Current)
+		} else if state.Status == player.StatusIdle || state.VoiceChannelID == "" {
+			b.clearPresence()
+		}
+	}
+}
+
+func (b *Bot) setVoiceChannelStatus(channelID, status string) {
+	chID, err := snowflake.Parse(channelID)
+	if err != nil {
+		return
+	}
+	body := struct {
+		Status string `json:"status"`
+	}{Status: status}
+	if err := b.Client.Rest.Do(voiceStatusEndpoint.Compile(nil, chID), body, nil); err != nil {
+		log.Printf("noctune: set voice channel status: %v", err)
+	}
+}
+
+func (b *Bot) setPresence(t *player.Track) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	name := t.Title
+	if t.Artist != "" {
+		name = t.Artist + " — " + t.Title
+	}
+	if err := b.Client.SetPresence(ctx, gateway.WithListeningActivity(name)); err != nil {
+		log.Printf("noctune: set presence: %v", err)
+	}
+}
+
+func (b *Bot) clearPresence() {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := b.Client.SetPresence(ctx); err != nil {
+		log.Printf("noctune: clear presence: %v", err)
+	}
 }
 
 const embedColor = 0x5865F2
