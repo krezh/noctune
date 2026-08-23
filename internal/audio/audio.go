@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -66,8 +67,9 @@ type Handle struct {
 	readErrMu sync.Mutex
 	readErr   error // set by readLoop on a non-EOF failure
 
-	position   atomic.Int64 // nanoseconds of audio provided so far
-	framesSent atomic.Int64
+	position        atomic.Int64 // nanoseconds of audio provided so far
+	framesSent      atomic.Int64
+	starvationCount atomic.Int64 // times ProvideOpusFrame had to wait for a frame
 
 	mu       sync.Mutex
 	paused   bool
@@ -135,6 +137,7 @@ func Play(stream io.ReadCloser, opts Options) (*Handle, error) {
 		"-map", "0:a",
 		"-acodec", "libopus",
 		"-f", "ogg",
+		"-page_duration", "20000",
 		"-vbr", "on",
 		"-compression_level", "10",
 		"-ar", "48000",
@@ -225,6 +228,10 @@ func (h *Handle) readLoop() {
 	// OpusTags metadata packets, not audio.
 	skipPackets := 2
 
+	// Log buffer level every ~10 seconds (500 frames × 20ms) to make
+	// steady-state health visible in the logs.
+	var logTick int
+
 	for {
 		frame, err := h.ogg.ReadPacket()
 		if err != nil {
@@ -257,6 +264,14 @@ func (h *Handle) readLoop() {
 			h.doneCh <- nil
 			return
 		}
+
+		logTick++
+		if logTick%500 == 0 {
+			slog.Debug("audio: buffer level",
+				"frames", len(h.frames),
+				"max", frameBufferSize,
+				"starvations", h.starvationCount.Load())
+		}
 	}
 }
 
@@ -265,6 +280,15 @@ func (h *Handle) readLoop() {
 // while paused it returns (nil, nil) immediately, which the sender takes
 // as silence, rather than stalling the sender's pacing loop.
 func (h *Handle) ProvideOpusFrame() ([]byte, error) {
+	// Check stop first with priority — a racing select between stopCh and
+	// a non-empty frames buffer picks randomly, producing choppy audio
+	// until the buffer drains.
+	select {
+	case <-h.stopCh:
+		return nil, io.EOF
+	default:
+	}
+
 	h.mu.Lock()
 	paused := h.paused
 	h.mu.Unlock()
@@ -272,6 +296,7 @@ func (h *Handle) ProvideOpusFrame() ([]byte, error) {
 		return nil, nil
 	}
 
+	// Fast path: frame already in buffer.
 	select {
 	case frame, ok := <-h.frames:
 		if !ok {
@@ -283,6 +308,32 @@ func (h *Handle) ProvideOpusFrame() ([]byte, error) {
 			}
 			return nil, io.EOF
 		}
+		h.position.Add(int64(frameDuration))
+		if h.framesSent.Add(1) == 1 {
+			log.Printf("audio: first opus frame provided to voice connection")
+		}
+		return frame, nil
+	case <-h.stopCh:
+		return nil, io.EOF
+	default:
+	}
+
+	// Slow path: buffer empty — starvation event; block and log.
+	n := h.starvationCount.Add(1)
+	t0 := time.Now()
+	slog.Debug("audio: buffer starvation", "count", n, "buf", len(h.frames), "max", frameBufferSize)
+	select {
+	case frame, ok := <-h.frames:
+		if !ok {
+			h.readErrMu.Lock()
+			err := h.readErr
+			h.readErrMu.Unlock()
+			if err != nil {
+				return nil, err
+			}
+			return nil, io.EOF
+		}
+		slog.Debug("audio: starvation recovered", "count", n, "after", time.Since(t0).Round(time.Millisecond))
 		h.position.Add(int64(frameDuration))
 		if h.framesSent.Add(1) == 1 {
 			log.Printf("audio: first opus frame provided to voice connection")
