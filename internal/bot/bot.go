@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"time"
 
 	"github.com/disgoorg/disgo"
 	"github.com/disgoorg/disgo/bot"
@@ -142,40 +143,49 @@ func (b *Bot) handlePlay(event *events.ApplicationCommandInteractionCreate, guil
 		return
 	}
 
+	channelID := vs.ChannelID.String()
 	gp := b.players.Get(guildID)
-	if err := gp.Join(vs.ChannelID.String()); err != nil {
-		respond(fmt.Sprintf("Couldn't join your voice channel: %v", err))
-		return
-	}
 
-	// AvatarURL, not EffectiveAvatarURL: a user with no custom avatar set
-	// falls back to a differently-shaped Discord "default avatar" CDN
-	// URL that discordAvatarURLPattern (avatarcache.go) doesn't match,
-	// since only real per-user avatar URLs are ever worth caching. nil
-	// here just means no avatar shown, same as the web session path.
-	var avatarURL string
-	if u := event.User().AvatarURL(); u != nil {
-		avatarURL = *u
-	}
-	tracks, err := b.resolver.Resolve(context.Background(), query, event.User().Username, avatarURL)
-	if err != nil || len(tracks) == 0 {
-		respond(fmt.Sprintf("Couldn't find anything for %q.", query))
-		return
-	}
-	for _, t := range tracks {
-		if err := gp.Enqueue(t); err != nil {
-			respond(err.Error())
+	// Run blocking work (voice join + resolve) off the event-dispatch goroutine.
+	// conn.Open waits for gateway events (voice state update, voice server
+	// update) that can never arrive if we block the event loop.
+	go func() {
+		joinCtx, joinCancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer joinCancel()
+		if err := gp.Join(joinCtx, channelID); err != nil {
+			respond(fmt.Sprintf("Couldn't join your voice channel: %v", err))
 			return
 		}
-	}
-	msg := fmt.Sprintf("Queued **%s** — %s", tracks[0].Title, tracks[0].Artist)
-	if len(tracks) > 1 {
-		msg = fmt.Sprintf("Queued %d tracks.", len(tracks))
-	}
-	if link := b.webGUILink(guildID); link != "" {
-		msg += "\n🔗 " + link
-	}
-	respond(msg)
+
+		// AvatarURL, not EffectiveAvatarURL: a user with no custom avatar set
+		// falls back to a differently-shaped Discord "default avatar" CDN
+		// URL that discordAvatarURLPattern (avatarcache.go) doesn't match,
+		// since only real per-user avatar URLs are ever worth caching. nil
+		// here just means no avatar shown, same as the web session path.
+		var avatarURL string
+		if u := event.User().AvatarURL(); u != nil {
+			avatarURL = *u
+		}
+		tracks, err := b.resolver.Resolve(context.Background(), query, event.User().Username, avatarURL)
+		if err != nil || len(tracks) == 0 {
+			respond(fmt.Sprintf("Couldn't find anything for %q.", query))
+			return
+		}
+		for _, t := range tracks {
+			if err := gp.Enqueue(t); err != nil {
+				respond(err.Error())
+				return
+			}
+		}
+		msg := fmt.Sprintf("Queued **%s** — %s", tracks[0].Title, tracks[0].Artist)
+		if len(tracks) > 1 {
+			msg = fmt.Sprintf("Queued %d tracks.", len(tracks))
+		}
+		if link := b.webGUILink(guildID); link != "" {
+			msg += "\n" + link
+		}
+		respond(msg)
+	}()
 }
 
 // webGUILink returns the web GUI's URL for a guild, or "" if

@@ -669,7 +669,7 @@ func (srv *Server) handleJoin(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-	if err := srv.players.Get(guildID).Join(channelID); err != nil {
+	if err := srv.players.Get(guildID).Join(r.Context(), channelID); err != nil {
 		srv.renderToast(w, fmt.Sprintf("Couldn't join voice channel: %v", err))
 		return
 	}
@@ -710,7 +710,7 @@ func (srv *Server) handlePlay(w http.ResponseWriter, r *http.Request) {
 	if botChannelID == "" {
 		switch {
 		case hasUserChannel:
-			if err := gp.Join(userChannelID); err != nil {
+			if err := gp.Join(r.Context(), userChannelID); err != nil {
 				srv.renderToast(w, fmt.Sprintf("Couldn't join voice channel: %v", err))
 				return
 			}

@@ -184,7 +184,7 @@ func (m *Manager) All() []*GuildPlayer {
 	return out
 }
 
-func (gp *GuildPlayer) Join(channelID string) error {
+func (gp *GuildPlayer) Join(ctx context.Context, channelID string) error {
 	gp.mu.Lock()
 	if gp.voiceConn != nil && gp.voiceChannelID == channelID {
 		gp.mu.Unlock()
@@ -202,9 +202,8 @@ func (gp *GuildPlayer) Join(channelID string) error {
 	}
 
 	conn := gp.client.VoiceManager.CreateConn(guildID)
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
 	if err := conn.Open(ctx, chID, false, true); err != nil {
+		conn.Close(context.Background())
 		return fmt.Errorf("join voice channel: %w", err)
 	}
 
