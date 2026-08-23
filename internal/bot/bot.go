@@ -364,11 +364,11 @@ func (b *Bot) watchGuild(guildID string) {
 		}
 
 		if channelID != "" {
+			chID, vsStatus := channelID, ""
 			if state.Status == player.StatusPlaying {
-				b.setVoiceChannelStatus(channelID, "Jammin")
-			} else {
-				b.setVoiceChannelStatus(channelID, "")
+				vsStatus = "Jammin"
 			}
+			go b.setVoiceChannelStatus(chID, vsStatus)
 		}
 
 		if state.Status == player.StatusPlaying && state.Current != nil {
