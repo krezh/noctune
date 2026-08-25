@@ -169,6 +169,11 @@ func TestManagerCloseStopsPlayers(t *testing.T) {
 		resolutionCancel: make(map[uint64]context.CancelFunc),
 	}
 	manager := &Manager{players: map[string]*GuildPlayer{"123": gp}}
+	resolutionCtx, finish, ok := gp.BeginResolution(context.Background(), gp.ResolutionGeneration())
+	if !ok {
+		t.Fatal("BeginResolution rejected current generation")
+	}
+	defer finish()
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
@@ -181,8 +186,16 @@ func TestManagerCloseStopsPlayers(t *testing.T) {
 	if !gp.closed {
 		t.Fatal("player was not marked closed")
 	}
+	select {
+	case <-resolutionCtx.Done():
+	default:
+		t.Fatal("manager shutdown did not cancel active resolution")
+	}
 	if err := gp.Join(context.Background(), "789"); err == nil {
 		t.Fatal("Join succeeded after manager shutdown")
+	}
+	if err := gp.Enqueue(&Track{ID: "late"}); err == nil {
+		t.Fatal("Enqueue succeeded after manager shutdown")
 	}
 }
 
@@ -231,5 +244,84 @@ func TestStalePlaybackCompletionDoesNotRequeue(t *testing.T) {
 	}
 	if gp.handle != newHandle {
 		t.Fatal("stale completion cleared the current handle")
+	}
+}
+
+func TestPlaybackCompletionAppliesLoopMode(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		loop    LoopMode
+		playErr error
+		wantIDs []string
+	}{
+		{name: "off", loop: LoopOff, wantIDs: []string{"next"}},
+		{name: "track", loop: LoopTrack, wantIDs: []string{"current", "next"}},
+		{name: "queue", loop: LoopQueue, wantIDs: []string{"next", "current"}},
+		{name: "playback error", loop: LoopTrack, playErr: io.ErrUnexpectedEOF, wantIDs: []string{"next"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			handle := &blockingPlaybackHandle{done: make(chan error, 1)}
+			gp := &GuildPlayer{
+				handle: handle,
+				loop:   tc.loop,
+				queue:  []*Track{{ID: "next"}},
+				subs:   make(map[chan State]struct{}),
+			}
+			if !gp.finishPlayback(handle, &Track{ID: "current"}, 0, tc.playErr) {
+				t.Fatal("current completion was rejected")
+			}
+			state := gp.Snapshot()
+			if len(state.Queue) != len(tc.wantIDs) {
+				t.Fatalf("queue length = %d, want %d", len(state.Queue), len(tc.wantIDs))
+			}
+			for i, want := range tc.wantIDs {
+				if got := state.Queue[i].ID; got != want {
+					t.Fatalf("queue[%d] = %q, want %q", i, got, want)
+				}
+			}
+		})
+	}
+}
+
+func TestJoinClosesSupersededConnection(t *testing.T) {
+	first := &blockingVoiceConn{openStarted: make(chan struct{}), openRelease: make(chan struct{})}
+	second := &blockingVoiceConn{openStarted: make(chan struct{}), openRelease: make(chan struct{})}
+	close(first.openRelease)
+	close(second.openRelease)
+	connections := []voiceConnection{first, second}
+	gp := &GuildPlayer{
+		GuildID: "123",
+		createVoiceConn: func(snowflake.ID) voiceConnection {
+			conn := connections[0]
+			connections = connections[1:]
+			return conn
+		},
+		resolver:         unusedResolver{},
+		cfg:              &config.Config{IdleDisconnectSeconds: 0},
+		subs:             make(map[chan State]struct{}),
+		playSignal:       make(chan struct{}, 1),
+		stopLoopCh:       make(chan struct{}),
+		loopDone:         make(chan struct{}),
+		resolutionCancel: make(map[uint64]context.CancelFunc),
+	}
+
+	if err := gp.Join(context.Background(), "456"); err != nil {
+		t.Fatalf("first Join() error = %v", err)
+	}
+	if err := gp.Join(context.Background(), "789"); err != nil {
+		t.Fatalf("second Join() error = %v", err)
+	}
+	if got := first.closed.Load(); got != 1 {
+		t.Fatalf("superseded connection closed %d times, want 1", got)
+	}
+	if got := gp.Snapshot().VoiceChannelID; got != "789" {
+		t.Fatalf("VoiceChannelID = %q, want 789", got)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	manager := &Manager{players: map[string]*GuildPlayer{"123": gp}}
+	if err := manager.Close(ctx); err != nil {
+		t.Fatalf("manager Close() error = %v", err)
 	}
 }

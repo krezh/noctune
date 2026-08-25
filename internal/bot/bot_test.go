@@ -24,3 +24,20 @@ func TestCloseContextWaitsForWatchers(t *testing.T) {
 		t.Fatal("bot was not marked closed")
 	}
 }
+
+func TestClosedBotRejectsNewWatchers(t *testing.T) {
+	watchCtx, watchCancel := context.WithCancel(context.Background())
+	b := &Bot{
+		watchCtx:      watchCtx,
+		watchCancel:   watchCancel,
+		watchedGuilds: make(map[string]struct{}),
+	}
+	if err := b.CloseContext(context.Background()); err != nil {
+		t.Fatalf("CloseContext() error = %v", err)
+	}
+
+	b.watchGuild("123")
+	if len(b.watchedGuilds) != 0 {
+		t.Fatal("closed bot registered a new guild watcher")
+	}
+}

@@ -65,6 +65,22 @@ func TestServerCloseWaitsForSearchWorkers(t *testing.T) {
 	}
 }
 
+func TestQueueSearchAfterCloseReturns(t *testing.T) {
+	searchCtx, searchCancel := context.WithCancel(context.Background())
+	srv := &Server{searchCtx: searchCtx, searchCancel: searchCancel, closed: true}
+	done := make(chan struct{})
+	go func() {
+		srv.queueSearch("123", "query", "user", "")
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("queueSearch blocked after server shutdown")
+	}
+}
+
 func TestGuildInitials(t *testing.T) {
 	cases := []struct {
 		name string
