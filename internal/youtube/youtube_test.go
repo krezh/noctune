@@ -1,12 +1,32 @@
 package youtube
 
 import (
+	"context"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func TestOpenStreamReportsProcessFailureWithoutStderr(t *testing.T) {
+	dir := t.TempDir()
+	ytDlp := filepath.Join(dir, "yt-dlp")
+	if err := os.WriteFile(ytDlp, []byte("#!/bin/sh\nexit 42\n"), 0o755); err != nil {
+		t.Fatalf("write fake yt-dlp: %v", err)
+	}
+
+	stream, err := New(ytDlp, "").OpenStream(context.Background(), "https://www.youtube.com/watch?v=test")
+	if err != nil {
+		t.Fatalf("OpenStream() error = %v", err)
+	}
+	if _, err := io.ReadAll(stream); err != nil {
+		t.Fatalf("read stream: %v", err)
+	}
+	if err := stream.Close(); err == nil || !strings.Contains(err.Error(), "exit status 42") {
+		t.Fatalf("Close() error = %v, want yt-dlp exit failure", err)
+	}
+}
 
 func TestCachingStreamFinalizesOnEOF(t *testing.T) {
 	dir := t.TempDir()

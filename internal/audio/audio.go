@@ -57,8 +57,9 @@ type Handle struct {
 	zmqSocket string
 	volumeMu  sync.Mutex // serializes SetVolume calls against one another
 
-	stderrMu  sync.Mutex
-	stderrBuf bytes.Buffer
+	stderrMu   sync.Mutex
+	stderrBuf  bytes.Buffer
+	stderrDone chan struct{}
 
 	stopCh   chan struct{}
 	stopOnce sync.Once
@@ -172,14 +173,15 @@ func Play(stream io.ReadCloser, opts Options) (*Handle, error) {
 	}
 
 	h := &Handle{
-		cmd:       cmd,
-		ogg:       newOggDemuxer(stdout),
-		stream:    stream,
-		zmqSocket: sockPath,
-		stopCh:    make(chan struct{}),
-		doneCh:    make(chan error, 1),
-		frames:    make(chan []byte, frameBufferSize),
-		resumeCh:  make(chan struct{}),
+		cmd:        cmd,
+		ogg:        newOggDemuxer(stdout),
+		stream:     stream,
+		zmqSocket:  sockPath,
+		stopCh:     make(chan struct{}),
+		doneCh:     make(chan error, 1),
+		frames:     make(chan []byte, frameBufferSize),
+		resumeCh:   make(chan struct{}),
+		stderrDone: make(chan struct{}),
 	}
 	log.Printf("audio: encode session started")
 	go h.readStderr(stderr)
@@ -188,6 +190,7 @@ func Play(stream io.ReadCloser, opts Options) (*Handle, error) {
 }
 
 func (h *Handle) readStderr(r io.Reader) {
+	defer close(h.stderrDone)
 	scanner := bufio.NewScanner(r)
 	for scanner.Scan() {
 		h.stderrMu.Lock()
@@ -214,16 +217,6 @@ func (h *Handle) ffmpegMessages() string {
 // ffmpeg's process lifetime and reports the track's terminal state on
 // doneCh once done.
 func (h *Handle) readLoop() {
-	defer func() {
-		_ = h.cmd.Process.Kill()
-		_ = h.cmd.Wait()
-		_ = os.Remove(h.zmqSocket)
-	}()
-	defer func() {
-		if err := h.stream.Close(); err != nil {
-			log.Printf("audio: source stream close error: %v", err)
-		}
-	}()
 	defer close(h.frames)
 
 	// The first two packets of an Opus-in-Ogg stream are the OpusHead and
@@ -234,23 +227,20 @@ func (h *Handle) readLoop() {
 	// steady-state health visible in the logs.
 	var logTick int
 
+	var terminalErr error
+	framesProduced := 0
+
+readFrames:
 	for {
 		frame, err := h.ogg.ReadPacket()
 		if err != nil {
 			if errors.Is(err, io.EOF) {
-				if h.framesSent.Load() == 0 {
-					log.Printf("audio: encode EOF with zero frames provided, ffmpeg likely failed to start: %s", h.ffmpegMessages())
-				} else {
-					log.Printf("audio: encode EOF after %d frames provided", h.framesSent.Load())
-				}
+				log.Printf("audio: encode EOF after %d frames produced", framesProduced)
 			} else {
-				h.readErrMu.Lock()
-				h.readErr = fmt.Errorf("%w: %s", err, h.ffmpegMessages())
-				h.readErrMu.Unlock()
+				terminalErr = fmt.Errorf("decode ffmpeg output: %w", err)
 				log.Printf("audio: ogg read error after %d frames provided: %v", h.framesSent.Load(), err)
-				h.complete(h.readErr)
 			}
-			return
+			break
 		}
 
 		if skipPackets > 0 {
@@ -262,9 +252,9 @@ func (h *Handle) readLoop() {
 		case h.frames <- frame:
 		case <-h.stopCh:
 			log.Printf("audio: stopped after %d frames provided", h.framesSent.Load())
-			h.complete(nil)
-			return
+			break readFrames
 		}
+		framesProduced++
 
 		logTick++
 		if logTick%500 == 0 {
@@ -273,6 +263,37 @@ func (h *Handle) readLoop() {
 				"max", frameBufferSize,
 				"starvations", h.starvationCount.Load())
 		}
+	}
+
+	if terminalErr != nil {
+		_ = h.cmd.Process.Kill()
+	}
+	sourceErr := h.stream.Close()
+	waitErr := h.cmd.Wait()
+	<-h.stderrDone
+	_ = os.Remove(h.zmqSocket)
+
+	select {
+	case <-h.stopCh:
+		return
+	default:
+	}
+	if terminalErr == nil && sourceErr != nil {
+		terminalErr = fmt.Errorf("source stream: %w", sourceErr)
+	}
+	if terminalErr == nil && waitErr != nil {
+		terminalErr = fmt.Errorf("ffmpeg: %w", waitErr)
+	}
+	if terminalErr == nil && framesProduced == 0 {
+		terminalErr = errors.New("ffmpeg produced no audio frames")
+	}
+	if terminalErr != nil {
+		if messages := h.ffmpegMessages(); messages != "" {
+			terminalErr = fmt.Errorf("%w: %s", terminalErr, messages)
+		}
+		h.readErrMu.Lock()
+		h.readErr = terminalErr
+		h.readErrMu.Unlock()
 	}
 }
 

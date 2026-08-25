@@ -12,6 +12,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -20,6 +21,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -292,10 +295,14 @@ func (c *Client) cachePath(watchURL string) string {
 // cached as if it were complete.
 type cachingStream struct {
 	io.ReadCloser
+	mu         sync.Mutex
 	tmp        *os.File
 	finalPath  string
 	reachedEOF bool
 	writeErr   error
+	closed     bool
+	closeOnce  sync.Once
+	closeErr   error
 }
 
 func newCachingStream(src io.ReadCloser, finalPath string) io.ReadCloser {
@@ -313,7 +320,9 @@ func newCachingStream(src io.ReadCloser, finalPath string) io.ReadCloser {
 
 func (c *cachingStream) Read(p []byte) (int, error) {
 	n, err := c.ReadCloser.Read(p)
-	if n > 0 && c.writeErr == nil {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if n > 0 && !c.closed && c.writeErr == nil {
 		if _, werr := c.tmp.Write(p[:n]); werr != nil {
 			c.writeErr = werr
 			log.Printf("youtube: cache write: %v", werr)
@@ -326,19 +335,25 @@ func (c *cachingStream) Read(p []byte) (int, error) {
 }
 
 func (c *cachingStream) Close() error {
-	closeErr := c.ReadCloser.Close()
-	_ = c.tmp.Close()
-	if c.reachedEOF && c.writeErr == nil {
-		if err := os.Rename(c.tmp.Name(), c.finalPath); err != nil {
-			log.Printf("youtube: cache finalize: %v", err)
-			if rmErr := os.Remove(c.tmp.Name()); rmErr != nil {
-				log.Printf("youtube: remove stale cache temp file: %v", rmErr)
+	c.closeOnce.Do(func() {
+		closeErr := c.ReadCloser.Close()
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		c.closed = true
+		c.closeErr = closeErr
+		_ = c.tmp.Close()
+		if c.reachedEOF && c.writeErr == nil {
+			if err := os.Rename(c.tmp.Name(), c.finalPath); err != nil {
+				log.Printf("youtube: cache finalize: %v", err)
+				if rmErr := os.Remove(c.tmp.Name()); rmErr != nil {
+					log.Printf("youtube: remove stale cache temp file: %v", rmErr)
+				}
 			}
+		} else if rmErr := os.Remove(c.tmp.Name()); rmErr != nil {
+			log.Printf("youtube: remove cache temp file: %v", rmErr)
 		}
-	} else if rmErr := os.Remove(c.tmp.Name()); rmErr != nil {
-		log.Printf("youtube: remove cache temp file: %v", rmErr)
-	}
-	return closeErr
+	})
+	return c.closeErr
 }
 
 // processStream ties the lifetime of a yt-dlp subprocess to its stdout
@@ -347,24 +362,39 @@ func (c *cachingStream) Close() error {
 // cleanup step.
 type processStream struct {
 	io.ReadCloser
-	cmd    *exec.Cmd
-	stderr *bytes.Buffer
+	cmd        *exec.Cmd
+	stderr     *bytes.Buffer
+	reachedEOF atomic.Bool
+	closeOnce  sync.Once
+	closeErr   error
+}
+
+func (p *processStream) Read(buf []byte) (int, error) {
+	n, err := p.ReadCloser.Read(buf)
+	if errors.Is(err, io.EOF) {
+		p.reachedEOF.Store(true)
+	}
+	return n, err
 }
 
 func (p *processStream) Close() error {
-	closeErr := p.ReadCloser.Close()
-	_ = p.cmd.Process.Kill()
-	waitErr := p.cmd.Wait()
-	if closeErr != nil {
-		return closeErr
-	}
-	// A killed process reports as an error from Wait; only surface it if
-	// yt-dlp actually printed something diagnostic, since Kill() itself
-	// causes a "signal: killed" error even on ordinary skip/stop.
-	if waitErr != nil && p.stderr.Len() > 0 {
-		return fmt.Errorf("yt-dlp: %s", p.stderr.String())
-	}
-	return nil
+	p.closeOnce.Do(func() {
+		closeErr := p.ReadCloser.Close()
+		naturalEOF := p.reachedEOF.Load()
+		if !naturalEOF {
+			_ = p.cmd.Process.Kill()
+		}
+		waitErr := p.cmd.Wait()
+		switch {
+		case closeErr != nil:
+			p.closeErr = closeErr
+		case naturalEOF && waitErr != nil && p.stderr.Len() > 0:
+			p.closeErr = fmt.Errorf("yt-dlp: %w: %s", waitErr, p.stderr.String())
+		case naturalEOF && waitErr != nil:
+			p.closeErr = fmt.Errorf("yt-dlp: %w", waitErr)
+		}
+	})
+	return p.closeErr
 }
 
 func (c *Client) run(ctx context.Context, target string) (*Result, error) {
