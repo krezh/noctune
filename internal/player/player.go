@@ -152,10 +152,14 @@ type GuildPlayer struct {
 	idleTimer        *time.Timer
 	subs             map[chan State]struct{}
 	loadingPlaylist  bool
+	closed           bool
+	loopStarted      bool
 
-	startOnce  sync.Once
-	playSignal chan struct{}
-	stopLoopCh chan struct{}
+	startOnce    sync.Once
+	stopLoopOnce sync.Once
+	playSignal   chan struct{}
+	stopLoopCh   chan struct{}
+	loopDone     chan struct{}
 }
 
 type Manager struct {
@@ -195,6 +199,7 @@ func (m *Manager) Get(guildID string) *GuildPlayer {
 		subs:             make(map[chan State]struct{}),
 		playSignal:       make(chan struct{}, 1),
 		stopLoopCh:       make(chan struct{}),
+		loopDone:         make(chan struct{}),
 		resolutionCancel: make(map[uint64]context.CancelFunc),
 	}
 	m.players[guildID] = gp
@@ -211,11 +216,26 @@ func (m *Manager) All() []*GuildPlayer {
 	return out
 }
 
+func (m *Manager) Close(ctx context.Context) error {
+	for _, gp := range m.All() {
+		if err := gp.close(ctx); err != nil {
+			return fmt.Errorf("close guild %s player: %w", gp.GuildID, err)
+		}
+	}
+	return nil
+}
+
 func (gp *GuildPlayer) Join(ctx context.Context, channelID string) error {
-	gp.voiceMu.Lock()
+	if err := gp.lockVoiceTransition(ctx); err != nil {
+		return err
+	}
 	defer gp.voiceMu.Unlock()
 
 	gp.mu.Lock()
+	if gp.closed {
+		gp.mu.Unlock()
+		return fmt.Errorf("player is closed")
+	}
 	if gp.voiceConn != nil && gp.voiceChannelID == channelID {
 		gp.mu.Unlock()
 		return nil
@@ -241,7 +261,10 @@ func (gp *GuildPlayer) Join(ctx context.Context, channelID string) error {
 	oldConn := gp.voiceConn
 	gp.voiceConn = conn
 	gp.voiceChannelID = channelID
-	gp.startOnce.Do(func() { go gp.playbackLoop() })
+	gp.startOnce.Do(func() {
+		gp.loopStarted = true
+		go gp.playbackLoop()
+	})
 	gp.mu.Unlock()
 	if oldConn != nil && oldConn != conn {
 		closeVoiceConnection(oldConn)
@@ -251,7 +274,15 @@ func (gp *GuildPlayer) Join(ctx context.Context, channelID string) error {
 }
 
 func (gp *GuildPlayer) Leave() error {
-	gp.voiceMu.Lock()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	return gp.leave(ctx)
+}
+
+func (gp *GuildPlayer) leave(ctx context.Context) error {
+	if err := gp.lockVoiceTransition(ctx); err != nil {
+		return err
+	}
 	defer gp.voiceMu.Unlock()
 
 	gp.mu.Lock()
@@ -279,10 +310,50 @@ func (gp *GuildPlayer) Leave() error {
 		handle.Stop()
 	}
 	if conn != nil {
-		closeVoiceConnection(conn)
+		conn.Close(ctx)
 	}
 	gp.notify()
 	return nil
+}
+
+func (gp *GuildPlayer) close(ctx context.Context) error {
+	gp.mu.Lock()
+	gp.closed = true
+	loopStarted := gp.loopStarted
+	if gp.idleTimer != nil {
+		gp.idleTimer.Stop()
+		gp.idleTimer = nil
+	}
+	gp.mu.Unlock()
+	gp.stopLoopOnce.Do(func() { close(gp.stopLoopCh) })
+
+	if err := gp.leave(ctx); err != nil {
+		return err
+	}
+	if !loopStarted {
+		return nil
+	}
+	select {
+	case <-gp.loopDone:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (gp *GuildPlayer) lockVoiceTransition(ctx context.Context) error {
+	ticker := time.NewTicker(time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if gp.voiceMu.TryLock() {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
 }
 
 func closeVoiceConnection(conn voiceConnection) {
@@ -330,6 +401,9 @@ func (gp *GuildPlayer) EnqueueResolved(track *Track, generation uint64) error {
 }
 
 func (gp *GuildPlayer) enqueueLocked(track *Track) error {
+	if gp.closed {
+		return fmt.Errorf("player is closed")
+	}
 	if len(gp.queue) >= gp.cfg.MaxQueueSize {
 		return fmt.Errorf("queue is full (max %d)", gp.cfg.MaxQueueSize)
 	}
@@ -480,7 +554,7 @@ func (gp *GuildPlayer) ResolutionGeneration() uint64 {
 // finish function must be called when resolution ends.
 func (gp *GuildPlayer) BeginResolution(parent context.Context, generation uint64) (context.Context, func(), bool) {
 	gp.mu.Lock()
-	if generation != gp.resolutionGen {
+	if gp.closed || generation != gp.resolutionGen {
 		gp.mu.Unlock()
 		return nil, nil, false
 	}
@@ -697,6 +771,7 @@ func (gp *GuildPlayer) cancelIdleTimer() {
 // playbackLoop is the single goroutine that drives playback for a guild,
 // started the first time the bot joins a voice channel there.
 func (gp *GuildPlayer) playbackLoop() {
+	defer close(gp.loopDone)
 	for {
 		gp.mu.Lock()
 		if len(gp.queue) == 0 {

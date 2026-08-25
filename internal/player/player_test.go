@@ -122,6 +122,7 @@ func TestLeaveWaitsForPendingJoin(t *testing.T) {
 		subs:             make(map[chan State]struct{}),
 		playSignal:       make(chan struct{}, 1),
 		stopLoopCh:       make(chan struct{}),
+		loopDone:         make(chan struct{}),
 		resolutionCancel: make(map[uint64]context.CancelFunc),
 	}
 	t.Cleanup(func() { close(gp.stopLoopCh) })
@@ -150,6 +151,38 @@ func TestLeaveWaitsForPendingJoin(t *testing.T) {
 	}
 	if got := gp.Snapshot().VoiceChannelID; got != "" {
 		t.Fatalf("VoiceChannelID = %q after Leave", got)
+	}
+}
+
+func TestManagerCloseStopsPlayers(t *testing.T) {
+	conn := &blockingVoiceConn{openStarted: make(chan struct{}), openRelease: make(chan struct{})}
+	close(conn.openRelease)
+	gp := &GuildPlayer{
+		GuildID:          "123",
+		voiceConn:        conn,
+		voiceChannelID:   "456",
+		cfg:              &config.Config{IdleDisconnectSeconds: 0},
+		subs:             make(map[chan State]struct{}),
+		playSignal:       make(chan struct{}, 1),
+		stopLoopCh:       make(chan struct{}),
+		loopDone:         make(chan struct{}),
+		resolutionCancel: make(map[uint64]context.CancelFunc),
+	}
+	manager := &Manager{players: map[string]*GuildPlayer{"123": gp}}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := manager.Close(ctx); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	if got := conn.closed.Load(); got != 1 {
+		t.Fatalf("connection closed %d times, want 1", got)
+	}
+	if !gp.closed {
+		t.Fatal("player was not marked closed")
+	}
+	if err := gp.Join(context.Background(), "789"); err == nil {
+		t.Fatal("Join succeeded after manager shutdown")
 	}
 }
 
