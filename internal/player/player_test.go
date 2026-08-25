@@ -37,6 +37,24 @@ func (unusedResolver) OpenStream(context.Context, string) (io.ReadCloser, error)
 	panic("unexpected OpenStream call")
 }
 
+type blockingPlaybackHandle struct {
+	pauseStarted chan struct{}
+	pauseRelease chan struct{}
+	done         chan error
+}
+
+func (h *blockingPlaybackHandle) ProvideOpusFrame() ([]byte, error) { return nil, io.EOF }
+func (h *blockingPlaybackHandle) Close()                            {}
+func (h *blockingPlaybackHandle) Pause() {
+	close(h.pauseStarted)
+	<-h.pauseRelease
+}
+func (h *blockingPlaybackHandle) Resume()                 {}
+func (h *blockingPlaybackHandle) Stop()                   {}
+func (h *blockingPlaybackHandle) SetVolume(int) error     { return nil }
+func (h *blockingPlaybackHandle) Done() <-chan error      { return h.done }
+func (h *blockingPlaybackHandle) Position() time.Duration { return 0 }
+
 func TestStopCancelsTrackStartup(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	gp := &GuildPlayer{trackCancel: cancel, loop: LoopTrack, subs: make(map[chan State]struct{})}
@@ -132,5 +150,53 @@ func TestLeaveWaitsForPendingJoin(t *testing.T) {
 	}
 	if got := gp.Snapshot().VoiceChannelID; got != "" {
 		t.Fatalf("VoiceChannelID = %q after Leave", got)
+	}
+}
+
+func TestPauseDoesNotOverwriteNewPlaybackState(t *testing.T) {
+	oldHandle := &blockingPlaybackHandle{
+		pauseStarted: make(chan struct{}),
+		pauseRelease: make(chan struct{}),
+		done:         make(chan error, 1),
+	}
+	newHandle := &blockingPlaybackHandle{done: make(chan error, 1)}
+	gp := &GuildPlayer{handle: oldHandle, status: StatusPlaying, subs: make(map[chan State]struct{})}
+
+	pauseDone := make(chan error, 1)
+	go func() { pauseDone <- gp.Pause() }()
+	<-oldHandle.pauseStarted
+	gp.mu.Lock()
+	gp.handle = newHandle
+	gp.status = StatusLoading
+	gp.mu.Unlock()
+	close(oldHandle.pauseRelease)
+
+	if err := <-pauseDone; err == nil {
+		t.Fatal("Pause succeeded after the playback handle changed")
+	}
+	if got := gp.Snapshot().Status; got != StatusLoading {
+		t.Fatalf("status = %q, want %q", got, StatusLoading)
+	}
+}
+
+func TestStalePlaybackCompletionDoesNotRequeue(t *testing.T) {
+	oldHandle := &blockingPlaybackHandle{done: make(chan error, 1)}
+	newHandle := &blockingPlaybackHandle{done: make(chan error, 1)}
+	track := &Track{ID: "old"}
+	gp := &GuildPlayer{
+		handle:      newHandle,
+		playbackGen: 2,
+		loop:        LoopTrack,
+		subs:        make(map[chan State]struct{}),
+	}
+
+	if gp.finishPlayback(oldHandle, track, 1, nil) {
+		t.Fatal("stale completion was accepted")
+	}
+	if len(gp.Snapshot().Queue) != 0 {
+		t.Fatal("stale completion requeued its track")
+	}
+	if gp.handle != newHandle {
+		t.Fatal("stale completion cleared the current handle")
 	}
 }

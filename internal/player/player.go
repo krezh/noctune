@@ -96,6 +96,16 @@ type voiceConnection interface {
 	SetOpusFrameProvider(provider voiceapi.OpusFrameProvider)
 }
 
+type playbackHandle interface {
+	voiceapi.OpusFrameProvider
+	Pause()
+	Resume()
+	Stop()
+	SetVolume(int) error
+	Done() <-chan error
+	Position() time.Duration
+}
+
 type State struct {
 	GuildID        string
 	VoiceChannelID string
@@ -133,7 +143,7 @@ type GuildPlayer struct {
 	status           Status
 	volume           int
 	loop             LoopMode
-	handle           *audio.Handle
+	handle           playbackHandle
 	trackCancel      context.CancelFunc
 	playbackGen      uint64
 	resolutionGen    uint64
@@ -246,6 +256,7 @@ func (gp *GuildPlayer) Leave() error {
 
 	gp.mu.Lock()
 	handle := gp.handle
+	gp.handle = nil
 	trackCancel := gp.trackCancel
 	gp.trackCancel = nil
 	gp.playbackGen++
@@ -394,12 +405,17 @@ func (gp *GuildPlayer) PlayNow(id string) error {
 func (gp *GuildPlayer) Pause() error {
 	gp.mu.Lock()
 	handle := gp.handle
+	playbackGen := gp.playbackGen
 	gp.mu.Unlock()
 	if handle == nil {
 		return fmt.Errorf("nothing is playing")
 	}
 	handle.Pause()
 	gp.mu.Lock()
+	if gp.handle != handle || gp.playbackGen != playbackGen {
+		gp.mu.Unlock()
+		return fmt.Errorf("track changed while pausing")
+	}
 	gp.status = StatusPaused
 	gp.mu.Unlock()
 	gp.notify()
@@ -409,12 +425,17 @@ func (gp *GuildPlayer) Pause() error {
 func (gp *GuildPlayer) Resume() error {
 	gp.mu.Lock()
 	handle := gp.handle
+	playbackGen := gp.playbackGen
 	gp.mu.Unlock()
 	if handle == nil {
 		return fmt.Errorf("nothing is playing")
 	}
 	handle.Resume()
 	gp.mu.Lock()
+	if gp.handle != handle || gp.playbackGen != playbackGen {
+		gp.mu.Unlock()
+		return fmt.Errorf("track changed while resuming")
+	}
 	gp.status = StatusPlaying
 	gp.mu.Unlock()
 	gp.notify()
@@ -426,6 +447,7 @@ func (gp *GuildPlayer) Resume() error {
 func (gp *GuildPlayer) Stop() error {
 	gp.mu.Lock()
 	handle := gp.handle
+	gp.handle = nil
 	trackCancel := gp.trackCancel
 	gp.trackCancel = nil
 	gp.playbackGen++
@@ -695,7 +717,6 @@ func (gp *GuildPlayer) playbackLoop() {
 		gp.current = track
 		gp.status = StatusLoading
 		voiceConn := gp.voiceConn
-		volume := gp.volume
 		trackCtx, trackCancel := context.WithCancel(context.Background())
 		gp.trackCancel = trackCancel
 		playbackGen := gp.playbackGen
@@ -717,6 +738,9 @@ func (gp *GuildPlayer) playbackLoop() {
 			continue
 		}
 		log.Printf("noctune: stream opened for %q, starting encode", track.Title)
+		gp.mu.Lock()
+		volume := gp.volume
+		gp.mu.Unlock()
 
 		handle, err := audio.Play(stream, audio.Options{Volume: volume})
 		if err != nil {
@@ -733,12 +757,18 @@ func (gp *GuildPlayer) playbackLoop() {
 			continue
 		}
 		gp.handle = handle
+		currentVolume := gp.volume
 		gp.status = StatusPlaying
 		gp.history = append([]*Track{track}, gp.history...)
 		if len(gp.history) > historyMaxSize {
 			gp.history = gp.history[:historyMaxSize]
 		}
 		gp.mu.Unlock()
+		if currentVolume != volume {
+			if err := handle.SetVolume(currentVolume); err != nil {
+				log.Printf("noctune: apply current volume for %q: %v", track.Title, err)
+			}
+		}
 		voiceConn.SetOpusFrameProvider(handle)
 		gp.notify()
 
@@ -748,20 +778,26 @@ func (gp *GuildPlayer) playbackLoop() {
 			log.Printf("noctune: playback error for %q: %v", track.Title, playErr)
 		}
 
-		gp.mu.Lock()
-		gp.handle = nil
-		if gp.playbackGen == playbackGen {
-			gp.trackCancel = nil
-		}
-		switch {
-		case playErr != nil:
-			// dropped: don't requeue a track that failed to play
-		case gp.loop == LoopTrack:
-			gp.queue = append([]*Track{track}, gp.queue...)
-		case gp.loop == LoopQueue:
-			gp.queue = append(gp.queue, track)
-		}
-		gp.mu.Unlock()
-		gp.notify()
+		gp.finishPlayback(handle, track, playbackGen, playErr)
 	}
+}
+
+func (gp *GuildPlayer) finishPlayback(handle playbackHandle, track *Track, playbackGen uint64, playErr error) bool {
+	gp.mu.Lock()
+	if gp.playbackGen != playbackGen || gp.handle != handle {
+		gp.mu.Unlock()
+		return false
+	}
+	gp.handle = nil
+	gp.trackCancel = nil
+	switch {
+	case playErr != nil:
+	case gp.loop == LoopTrack:
+		gp.queue = append([]*Track{track}, gp.queue...)
+	case gp.loop == LoopQueue:
+		gp.queue = append(gp.queue, track)
+	}
+	gp.mu.Unlock()
+	gp.notify()
+	return true
 }
