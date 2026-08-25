@@ -10,9 +10,9 @@
 // currently sitting in the same voice channel the bot is connected to
 // (see requireVoicePresence); WEB_AUTH_TOKEN is a Trusted fallback with
 // no per-user identity, granting full, ungated control to anyone who has
-// the token — same trust model as the old shared-token cookie. A
-// session cookies are signed and backed by an in-memory active-session
-// registry so logout can revoke copied credentials.
+// the token — same trust model as the old shared-token cookie.
+// Session cookies are signed and survive restarts when SESSION_SECRET is
+// fixed. Logout revocation is process-local; see sessionStore.
 package api
 
 import (

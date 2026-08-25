@@ -38,9 +38,9 @@ type Config struct {
 	// Defaults to WebPublicURL + "/auth/discord/callback" when
 	// WebPublicURL is set; required explicitly otherwise.
 	DiscordOAuthRedirectURL string `env:"DISCORD_OAUTH_REDIRECT_URL"`
-	// SessionSecret signs web GUI session cookies (HMAC-SHA256). Left unset,
-	// noctune generates a random value at startup. Sessions are memory-backed
-	// and therefore expire on restart either way.
+	// SessionSecret signs web GUI session cookies (HMAC-SHA256). Set a fixed
+	// value to keep logins across restarts; left unset, noctune generates a
+	// random value at startup.
 	SessionSecret string `env:"SESSION_SECRET"`
 
 	DefaultVolume         int    `env:"DEFAULT_VOLUME" envDefault:"100"`

@@ -45,12 +45,13 @@ func (s *session) canAccessGuild(guildID string) bool {
 	return ok
 }
 
-// sessionStore signs cookie payloads and tracks active session IDs so logout
-// revokes every copy of a cookie. Active sessions are intentionally in memory.
+// sessionStore signs cookie payloads and tracks process-local revocations.
+// Signed sessions survive restarts; revocations intentionally do not.
 type sessionStore struct {
-	key    []byte
-	mu     sync.RWMutex
-	active map[string]chan struct{}
+	key     []byte
+	mu      sync.Mutex
+	revoked map[string]time.Time
+	signals map[string]chan struct{}
 }
 
 // newSessionStore builds the signer from cfg.SessionSecret. Left unset, it
@@ -64,7 +65,11 @@ func newSessionStore(secret string) *sessionStore {
 		}
 		log.Print("noctune: SESSION_SECRET is not set — generated a random key for this run")
 	}
-	return &sessionStore{key: key, active: make(map[string]chan struct{})}
+	return &sessionStore{
+		key:     key,
+		revoked: make(map[string]time.Time),
+		signals: make(map[string]chan struct{}),
+	}
 }
 
 func (s *sessionStore) sign(payload []byte) string {
@@ -85,22 +90,21 @@ func (s *sessionStore) create(sess *session) (string, error) {
 		return "", err
 	}
 	encoded := base64.RawURLEncoding.EncodeToString(payload)
-	s.mu.Lock()
-	s.active[sess.ID] = make(chan struct{})
-	s.mu.Unlock()
 	return encoded + "." + s.sign(payload), nil
 }
 
 // get verifies and decodes a cookie value produced by create.
 func (s *sessionStore) get(cookieValue string) (*session, bool) {
 	sess, ok := s.decode(cookieValue)
-	if !ok || time.Now().After(sess.ExpiresAt) {
+	now := time.Now()
+	if !ok || sess.ID == "" || now.After(sess.ExpiresAt) {
 		return nil, false
 	}
-	s.mu.RLock()
-	_, active := s.active[sess.ID]
-	s.mu.RUnlock()
-	if !active {
+	s.mu.Lock()
+	s.cleanupRevocationsLocked(now)
+	_, revoked := s.revoked[sess.ID]
+	s.mu.Unlock()
+	if revoked {
 		return nil, false
 	}
 	return sess, true
@@ -131,18 +135,36 @@ func (s *sessionStore) revoke(cookieValue string) {
 		return
 	}
 	s.mu.Lock()
-	if done, active := s.active[sess.ID]; active {
-		delete(s.active, sess.ID)
+	s.cleanupRevocationsLocked(time.Now())
+	s.revoked[sess.ID] = sess.ExpiresAt
+	if done, exists := s.signals[sess.ID]; exists {
+		delete(s.signals, sess.ID)
 		close(done)
 	}
 	s.mu.Unlock()
 }
 
 func (s *sessionStore) revocationSignal(sessionID string) (<-chan struct{}, bool) {
-	s.mu.RLock()
-	done, active := s.active[sessionID]
-	s.mu.RUnlock()
-	return done, active
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.cleanupRevocationsLocked(time.Now())
+	if _, revoked := s.revoked[sessionID]; revoked {
+		return nil, false
+	}
+	if done, exists := s.signals[sessionID]; exists {
+		return done, true
+	}
+	done := make(chan struct{})
+	s.signals[sessionID] = done
+	return done, true
+}
+
+func (s *sessionStore) cleanupRevocationsLocked(now time.Time) {
+	for id, expiresAt := range s.revoked {
+		if now.After(expiresAt) {
+			delete(s.revoked, id)
+		}
+	}
 }
 
 type contextKey int

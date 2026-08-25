@@ -82,7 +82,7 @@ func TestSessionRevocation(t *testing.T) {
 	}
 }
 
-func TestSessionRequiresActiveRegistryEntry(t *testing.T) {
+func TestSessionSurvivesStoreRestart(t *testing.T) {
 	secret := "a-fixed-32-byte-plus-test-secret!!"
 	store := newSessionStore(secret)
 	cookie, err := store.create(&session{DiscordUserID: "42"})
@@ -91,8 +91,23 @@ func TestSessionRequiresActiveRegistryEntry(t *testing.T) {
 	}
 
 	restarted := newSessionStore(secret)
-	if _, ok := restarted.get(cookie); ok {
-		t.Fatal("session without an active registry entry was accepted")
+	if _, ok := restarted.get(cookie); !ok {
+		t.Fatal("valid signed session was rejected after store restart")
+	}
+}
+
+func TestSessionRevocationIsProcessLocal(t *testing.T) {
+	secret := "a-fixed-32-byte-plus-test-secret!!"
+	store := newSessionStore(secret)
+	cookie, err := store.create(&session{DiscordUserID: "42"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	store.revoke(cookie)
+
+	restarted := newSessionStore(secret)
+	if _, ok := restarted.get(cookie); !ok {
+		t.Fatal("process-local revocation survived store restart")
 	}
 }
 
