@@ -2,8 +2,40 @@ package player
 
 import (
 	"context"
+	"io"
+	"sync/atomic"
 	"testing"
+	"time"
+
+	voiceapi "github.com/disgoorg/disgo/voice"
+	"github.com/disgoorg/snowflake/v2"
+
+	"github.com/krezh/noctune/internal/config"
 )
+
+type blockingVoiceConn struct {
+	openStarted chan struct{}
+	openRelease chan struct{}
+	closed      atomic.Int32
+}
+
+func (c *blockingVoiceConn) Open(context.Context, snowflake.ID, bool, bool) error {
+	close(c.openStarted)
+	<-c.openRelease
+	return nil
+}
+
+func (c *blockingVoiceConn) Close(context.Context) {
+	c.closed.Add(1)
+}
+
+func (c *blockingVoiceConn) SetOpusFrameProvider(voiceapi.OpusFrameProvider) {}
+
+type unusedResolver struct{}
+
+func (unusedResolver) OpenStream(context.Context, string) (io.ReadCloser, error) {
+	panic("unexpected OpenStream call")
+}
 
 func TestStopCancelsTrackStartup(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
@@ -59,5 +91,46 @@ func TestStopInvalidatesResolutions(t *testing.T) {
 	}
 	if _, _, ok := gp.BeginResolution(context.Background(), generation); ok {
 		t.Fatal("BeginResolution accepted stale generation")
+	}
+}
+
+func TestLeaveWaitsForPendingJoin(t *testing.T) {
+	conn := &blockingVoiceConn{openStarted: make(chan struct{}), openRelease: make(chan struct{})}
+	gp := &GuildPlayer{
+		GuildID:          "123",
+		createVoiceConn:  func(snowflake.ID) voiceConnection { return conn },
+		resolver:         unusedResolver{},
+		cfg:              &config.Config{IdleDisconnectSeconds: 0},
+		subs:             make(map[chan State]struct{}),
+		playSignal:       make(chan struct{}, 1),
+		stopLoopCh:       make(chan struct{}),
+		resolutionCancel: make(map[uint64]context.CancelFunc),
+	}
+	t.Cleanup(func() { close(gp.stopLoopCh) })
+
+	joinDone := make(chan error, 1)
+	go func() { joinDone <- gp.Join(context.Background(), "456") }()
+	<-conn.openStarted
+
+	leaveDone := make(chan error, 1)
+	go func() { leaveDone <- gp.Leave() }()
+	select {
+	case <-leaveDone:
+		t.Fatal("Leave returned while Join was still opening")
+	case <-time.After(10 * time.Millisecond):
+	}
+
+	close(conn.openRelease)
+	if err := <-joinDone; err != nil {
+		t.Fatalf("Join() error = %v", err)
+	}
+	if err := <-leaveDone; err != nil {
+		t.Fatalf("Leave() error = %v", err)
+	}
+	if got := conn.closed.Load(); got != 1 {
+		t.Fatalf("connection closed %d times, want 1", got)
+	}
+	if got := gp.Snapshot().VoiceChannelID; got != "" {
+		t.Fatalf("VoiceChannelID = %q after Leave", got)
 	}
 }

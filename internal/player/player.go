@@ -90,6 +90,12 @@ type StreamResolver interface {
 	OpenStream(ctx context.Context, watchURL string) (io.ReadCloser, error)
 }
 
+type voiceConnection interface {
+	Open(ctx context.Context, channelID snowflake.ID, selfMute, selfDeaf bool) error
+	Close(ctx context.Context)
+	SetOpusFrameProvider(provider voiceapi.OpusFrameProvider)
+}
+
 type State struct {
 	GuildID        string
 	VoiceChannelID string
@@ -113,12 +119,13 @@ const historyMaxSize = 50
 type GuildPlayer struct {
 	GuildID string
 
-	client   *bot.Client
-	resolver StreamResolver
-	cfg      *config.Config
+	createVoiceConn func(snowflake.ID) voiceConnection
+	resolver        StreamResolver
+	cfg             *config.Config
 
+	voiceMu          sync.Mutex
 	mu               sync.Mutex
-	voiceConn        voiceapi.Conn
+	voiceConn        voiceConnection
 	voiceChannelID   string
 	queue            []*Track
 	current          *Track
@@ -166,8 +173,10 @@ func (m *Manager) Get(guildID string) *GuildPlayer {
 		return gp
 	}
 	gp := &GuildPlayer{
-		GuildID:          guildID,
-		client:           m.client,
+		GuildID: guildID,
+		createVoiceConn: func(guildID snowflake.ID) voiceConnection {
+			return m.client.VoiceManager.CreateConn(guildID)
+		},
 		resolver:         m.resolver,
 		cfg:              m.cfg,
 		volume:           m.cfg.DefaultVolume,
@@ -193,6 +202,9 @@ func (m *Manager) All() []*GuildPlayer {
 }
 
 func (gp *GuildPlayer) Join(ctx context.Context, channelID string) error {
+	gp.voiceMu.Lock()
+	defer gp.voiceMu.Unlock()
+
 	gp.mu.Lock()
 	if gp.voiceConn != nil && gp.voiceChannelID == channelID {
 		gp.mu.Unlock()
@@ -209,22 +221,29 @@ func (gp *GuildPlayer) Join(ctx context.Context, channelID string) error {
 		return fmt.Errorf("parse guild id: %w", err)
 	}
 
-	conn := gp.client.VoiceManager.CreateConn(guildID)
+	conn := gp.createVoiceConn(guildID)
 	if err := conn.Open(ctx, chID, false, true); err != nil {
-		conn.Close(context.Background())
+		closeVoiceConnection(conn)
 		return fmt.Errorf("join voice channel: %w", err)
 	}
 
 	gp.mu.Lock()
+	oldConn := gp.voiceConn
 	gp.voiceConn = conn
 	gp.voiceChannelID = channelID
 	gp.startOnce.Do(func() { go gp.playbackLoop() })
 	gp.mu.Unlock()
+	if oldConn != nil && oldConn != conn {
+		closeVoiceConnection(oldConn)
+	}
 	gp.notify()
 	return nil
 }
 
 func (gp *GuildPlayer) Leave() error {
+	gp.voiceMu.Lock()
+	defer gp.voiceMu.Unlock()
+
 	gp.mu.Lock()
 	handle := gp.handle
 	trackCancel := gp.trackCancel
@@ -249,12 +268,16 @@ func (gp *GuildPlayer) Leave() error {
 		handle.Stop()
 	}
 	if conn != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		conn.Close(ctx)
+		closeVoiceConnection(conn)
 	}
 	gp.notify()
 	return nil
+}
+
+func closeVoiceConnection(conn voiceConnection) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	conn.Close(ctx)
 }
 
 func (gp *GuildPlayer) Enqueue(track *Track) error {
