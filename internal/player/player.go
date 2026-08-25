@@ -127,6 +127,8 @@ type GuildPlayer struct {
 	volume          int
 	loop            LoopMode
 	handle          *audio.Handle
+	trackCancel     context.CancelFunc
+	playbackGen     uint64
 	idleTimer       *time.Timer
 	subs            map[chan State]struct{}
 	loadingPlaylist bool
@@ -221,6 +223,9 @@ func (gp *GuildPlayer) Join(ctx context.Context, channelID string) error {
 func (gp *GuildPlayer) Leave() error {
 	gp.mu.Lock()
 	handle := gp.handle
+	trackCancel := gp.trackCancel
+	gp.trackCancel = nil
+	gp.playbackGen++
 	conn := gp.voiceConn
 	gp.voiceConn = nil
 	gp.voiceChannelID = ""
@@ -229,6 +234,9 @@ func (gp *GuildPlayer) Leave() error {
 	gp.status = StatusIdle
 	gp.mu.Unlock()
 
+	if trackCancel != nil {
+		trackCancel()
+	}
 	if handle != nil {
 		handle.Stop()
 	}
@@ -358,9 +366,15 @@ func (gp *GuildPlayer) Resume() error {
 func (gp *GuildPlayer) Stop() error {
 	gp.mu.Lock()
 	handle := gp.handle
+	trackCancel := gp.trackCancel
+	gp.trackCancel = nil
+	gp.playbackGen++
 	gp.queue = nil
 	gp.loop = LoopOff
 	gp.mu.Unlock()
+	if trackCancel != nil {
+		trackCancel()
+	}
 	if handle != nil {
 		handle.Stop()
 	}
@@ -571,18 +585,23 @@ func (gp *GuildPlayer) playbackLoop() {
 		gp.status = StatusLoading
 		voiceConn := gp.voiceConn
 		volume := gp.volume
+		trackCtx, trackCancel := context.WithCancel(context.Background())
+		gp.trackCancel = trackCancel
+		playbackGen := gp.playbackGen
 		gp.mu.Unlock()
 		gp.cancelIdleTimer()
 		gp.notify()
 
 		if voiceConn == nil {
+			trackCancel()
 			log.Printf("noctune: guild %s has no voice connection, dropping %q", gp.GuildID, track.Title)
 			continue
 		}
 
 		log.Printf("noctune: opening stream for %q (%s)", track.Title, track.WatchURL)
-		stream, err := gp.resolver.OpenStream(context.Background(), track.WatchURL)
+		stream, err := gp.resolver.OpenStream(trackCtx, track.WatchURL)
 		if err != nil {
+			trackCancel()
 			log.Printf("noctune: open stream for %q: %v", track.Title, err)
 			continue
 		}
@@ -590,12 +609,18 @@ func (gp *GuildPlayer) playbackLoop() {
 
 		handle, err := audio.Play(stream, audio.Options{Volume: volume})
 		if err != nil {
+			trackCancel()
 			log.Printf("noctune: play %q: %v", track.Title, err)
 			continue
 		}
-		voiceConn.SetOpusFrameProvider(handle)
 
 		gp.mu.Lock()
+		if gp.playbackGen != playbackGen || gp.voiceConn != voiceConn {
+			gp.mu.Unlock()
+			handle.Stop()
+			trackCancel()
+			continue
+		}
 		gp.handle = handle
 		gp.status = StatusPlaying
 		gp.history = append([]*Track{track}, gp.history...)
@@ -603,15 +628,20 @@ func (gp *GuildPlayer) playbackLoop() {
 			gp.history = gp.history[:historyMaxSize]
 		}
 		gp.mu.Unlock()
+		voiceConn.SetOpusFrameProvider(handle)
 		gp.notify()
 
 		playErr := <-handle.Done()
+		trackCancel()
 		if playErr != nil {
 			log.Printf("noctune: playback error for %q: %v", track.Title, playErr)
 		}
 
 		gp.mu.Lock()
 		gp.handle = nil
+		if gp.playbackGen == playbackGen {
+			gp.trackCancel = nil
+		}
 		switch {
 		case playErr != nil:
 			// dropped: don't requeue a track that failed to play
