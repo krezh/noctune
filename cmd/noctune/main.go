@@ -22,7 +22,12 @@ import (
 	"github.com/krezh/noctune/internal/youtube"
 )
 
-const shutdownTimeout = 10 * time.Second
+const (
+	shutdownTimeout   = 10 * time.Second
+	readHeaderTimeout = 5 * time.Second
+	readTimeout       = 15 * time.Second
+	idleTimeout       = 60 * time.Second
+)
 
 func main() {
 	cfg, err := config.Load()
@@ -58,10 +63,7 @@ func main() {
 		log.Fatalf("noctune: create web server: %v", err)
 	}
 
-	httpServer := &http.Server{
-		Addr:    cfg.WebListenAddr,
-		Handler: webServer.Handler(),
-	}
+	httpServer := newHTTPServer(cfg.WebListenAddr, webServer.Handler())
 	go func() {
 		log.Printf("noctune: web GUI listening on %s", cfg.WebListenAddr)
 		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -74,4 +76,14 @@ func main() {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
 	_ = httpServer.Shutdown(shutdownCtx)
+}
+
+func newHTTPServer(addr string, handler http.Handler) *http.Server {
+	return &http.Server{
+		Addr:              addr,
+		Handler:           handler,
+		ReadHeaderTimeout: readHeaderTimeout,
+		ReadTimeout:       readTimeout,
+		IdleTimeout:       idleTimeout,
+	}
 }
