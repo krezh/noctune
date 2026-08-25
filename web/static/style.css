@@ -542,7 +542,7 @@ input[type=range]::-moz-range-thumb {
   position: relative;
   transition: color 0.15s, border-color 0.15s;
 }
-.segmented button:hover { color: var(--moon); }
+.segmented button:hover { color: var(--moon); z-index: 2; }
 .segmented button.active { color: var(--amber); border-color: var(--amber); font-weight: 600; z-index: 1; }
 
 .loop-row {
