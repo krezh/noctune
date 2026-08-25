@@ -10,6 +10,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -27,6 +28,7 @@ const sessionTTL = 7 * 24 * time.Hour
 // granted access to every guild, exactly like the old shared-token
 // cookie did.
 type session struct {
+	ID             string              `json:"i"`
 	DiscordUserID  string              `json:"u,omitempty"`
 	Username       string              `json:"n,omitempty"`
 	AvatarURL      string              `json:"a,omitempty"`
@@ -43,24 +45,16 @@ func (s *session) canAccessGuild(guildID string) bool {
 	return ok
 }
 
-// sessionStore turns a session into a signed cookie value and back
-// (HMAC-SHA256 over the JSON payload) rather than keeping sessions in a
-// server-side table — the cookie itself is the only place this state
-// lives, so a restart (redeploy, crash, or just restarting the dev
-// process) doesn't sign anyone out, matching the rest of noctune's
-// memory-only, no-persistence design instead of fighting it. The
-// tradeoff: logout can only ever clear the cookie client-side, not
-// revoke it server-side, so a copied cookie stays valid until it
-// naturally expires (sessionTTL) even after "signing out".
+// sessionStore signs cookie payloads and tracks active session IDs so logout
+// revokes every copy of a cookie. Active sessions are intentionally in memory.
 type sessionStore struct {
-	key []byte
+	key    []byte
+	mu     sync.RWMutex
+	active map[string]struct{}
 }
 
-// newSessionStore builds the signer from cfg.SessionSecret. Left unset,
-// it generates a random key for this process's lifetime and logs a
-// warning — sessions still won't survive a restart in that case, since
-// every new process re-derives (and this time, invents) a different
-// key, invalidating every cookie signed with the old one.
+// newSessionStore builds the signer from cfg.SessionSecret. Left unset, it
+// generates a random key for this process's lifetime.
 func newSessionStore(secret string) *sessionStore {
 	key := []byte(secret)
 	if secret == "" {
@@ -68,9 +62,9 @@ func newSessionStore(secret string) *sessionStore {
 		if _, err := rand.Read(key); err != nil {
 			panic("noctune: generate session signing key: " + err.Error())
 		}
-		log.Print("noctune: SESSION_SECRET is not set — generated a random key for this run; every restart will sign everyone out. Set SESSION_SECRET to a fixed value to keep logins across restarts.")
+		log.Print("noctune: SESSION_SECRET is not set — generated a random key for this run")
 	}
-	return &sessionStore{key: key}
+	return &sessionStore{key: key, active: make(map[string]struct{})}
 }
 
 func (s *sessionStore) sign(payload []byte) string {
@@ -79,20 +73,40 @@ func (s *sessionStore) sign(payload []byte) string {
 	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 }
 
-// create returns the signed cookie value for sess. There's nothing to
-// store server-side — the returned string is the entire session.
 func (s *sessionStore) create(sess *session) (string, error) {
+	id := make([]byte, 32)
+	if _, err := rand.Read(id); err != nil {
+		return "", err
+	}
+	sess.ID = base64.RawURLEncoding.EncodeToString(id)
 	sess.ExpiresAt = time.Now().Add(sessionTTL)
 	payload, err := json.Marshal(sess)
 	if err != nil {
 		return "", err
 	}
 	encoded := base64.RawURLEncoding.EncodeToString(payload)
+	s.mu.Lock()
+	s.active[sess.ID] = struct{}{}
+	s.mu.Unlock()
 	return encoded + "." + s.sign(payload), nil
 }
 
 // get verifies and decodes a cookie value produced by create.
 func (s *sessionStore) get(cookieValue string) (*session, bool) {
+	sess, ok := s.decode(cookieValue)
+	if !ok || time.Now().After(sess.ExpiresAt) {
+		return nil, false
+	}
+	s.mu.RLock()
+	_, active := s.active[sess.ID]
+	s.mu.RUnlock()
+	if !active {
+		return nil, false
+	}
+	return sess, true
+}
+
+func (s *sessionStore) decode(cookieValue string) (*session, bool) {
 	encoded, sig, ok := strings.Cut(cookieValue, ".")
 	if !ok {
 		return nil, false
@@ -108,10 +122,17 @@ func (s *sessionStore) get(cookieValue string) (*session, bool) {
 	if err := json.Unmarshal(payload, &sess); err != nil {
 		return nil, false
 	}
-	if time.Now().After(sess.ExpiresAt) {
-		return nil, false
-	}
 	return &sess, true
+}
+
+func (s *sessionStore) revoke(cookieValue string) {
+	sess, ok := s.decode(cookieValue)
+	if !ok {
+		return
+	}
+	s.mu.Lock()
+	delete(s.active, sess.ID)
+	s.mu.Unlock()
 }
 
 type contextKey int

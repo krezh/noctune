@@ -11,9 +11,8 @@
 // (see requireVoicePresence); WEB_AUTH_TOKEN is a Trusted fallback with
 // no per-user identity, granting full, ungated control to anyone who has
 // the token — same trust model as the old shared-token cookie. A
-// session is a signed cookie, not a server-side table — see sessionStore
-// — so unlike the rest of noctune's state, logins survive a restart as
-// long as SESSION_SECRET is set to a fixed value.
+// session cookies are signed and backed by an in-memory active-session
+// registry so logout can revoke copied credentials.
 package api
 
 import (
@@ -507,12 +506,14 @@ func (srv *Server) handleLoginSubmit(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
-// handleLogout can only ever clear the cookie client-side — sessions are
-// signed cookies with no server-side table to revoke an entry from (see
-// sessionStore), so a copied cookie would stay valid until it naturally
-// expires even after this.
 func (srv *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
-	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: "", Path: "/", MaxAge: -1})
+	if cookie, err := r.Cookie(sessionCookie); err == nil {
+		srv.sessions.revoke(cookie.Value)
+	}
+	http.SetCookie(w, &http.Cookie{
+		Name: sessionCookie, Value: "", Path: "/", MaxAge: -1,
+		HttpOnly: true, Secure: isSecureRequest(r), SameSite: http.SameSiteLaxMode,
+	})
 	http.Redirect(w, r, "/login", http.StatusSeeOther)
 }
 

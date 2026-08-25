@@ -68,3 +68,30 @@ func TestSessionTamperedRejected(t *testing.T) {
 		t.Errorf("a cookie signed with a different key must not be accepted")
 	}
 }
+
+func TestSessionRevocation(t *testing.T) {
+	store := newSessionStore("a-fixed-32-byte-plus-test-secret!!")
+	cookie, err := store.create(&session{DiscordUserID: "42"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	store.revoke(cookie)
+	if _, ok := store.get(cookie); ok {
+		t.Fatal("revoked session was accepted")
+	}
+}
+
+func TestSessionRequiresActiveRegistryEntry(t *testing.T) {
+	secret := "a-fixed-32-byte-plus-test-secret!!"
+	store := newSessionStore(secret)
+	cookie, err := store.create(&session{DiscordUserID: "42"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	restarted := newSessionStore(secret)
+	if _, ok := restarted.get(cookie); ok {
+		t.Fatal("session without an active registry entry was accepted")
+	}
+}
