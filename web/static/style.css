@@ -145,14 +145,15 @@ header.top nav {
   gap: 0.3rem;
   margin-left: auto;
 }
-header.top nav a {
+header.top nav a, header.top nav .nav-action {
   color: var(--moon-dim);
   text-decoration: none;
   font-size: 0.82rem;
   padding: 0.3rem 0.6rem;
   transition: color 0.15s, background-color 0.15s;
 }
-header.top nav a:hover { color: var(--moon); background: var(--panel-2); }
+header.top nav .nav-action { border: 0; background: transparent; }
+header.top nav a:hover, header.top nav .nav-action:hover { color: var(--moon); background: var(--panel-2); }
 
 .nav-user {
   display: inline-flex;

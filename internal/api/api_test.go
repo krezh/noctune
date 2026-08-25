@@ -3,12 +3,47 @@ package api
 import (
 	"html/template"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
 	"github.com/krezh/noctune/internal/player"
 	"github.com/krezh/noctune/web"
 )
+
+func TestRequireSameOrigin(t *testing.T) {
+	srv := &Server{}
+	next := srv.requireSameOrigin(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	for _, tc := range []struct {
+		name         string
+		origin       string
+		secFetchSite string
+		want         int
+	}{
+		{name: "same origin", origin: "https://music.example.com", want: http.StatusNoContent},
+		{name: "different origin", origin: "https://evil.example", want: http.StatusForbidden},
+		{name: "sibling subdomain", origin: "https://admin.example.com", want: http.StatusForbidden},
+		{name: "cross-site without origin", secFetchSite: "cross-site", want: http.StatusForbidden},
+		{name: "same-site without origin", secFetchSite: "same-site", want: http.StatusForbidden},
+		{name: "non-browser client", want: http.StatusNoContent},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "https://music.example.com/action", nil)
+			req.Header.Set("Origin", tc.origin)
+			req.Header.Set("Sec-Fetch-Site", tc.secFetchSite)
+			rr := httptest.NewRecorder()
+
+			next(rr, req)
+			if rr.Code != tc.want {
+				t.Fatalf("status = %d, want %d", rr.Code, tc.want)
+			}
+		})
+	}
+}
 
 func TestGuildInitials(t *testing.T) {
 	cases := []struct {

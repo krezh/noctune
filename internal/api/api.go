@@ -27,6 +27,7 @@ import (
 	"log"
 	"math"
 	"net/http"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -297,6 +298,9 @@ func (srv *Server) runSearchWorker(guildID string, ch <-chan searchJob) {
 
 func (srv *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
+	post := func(pattern string, handler http.HandlerFunc) {
+		mux.HandleFunc("POST "+pattern, srv.requireSameOrigin(handler))
+	}
 
 	staticFS, err := fs.Sub(web.Static, "static")
 	if err != nil {
@@ -306,8 +310,8 @@ func (srv *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /avatar", srv.requireAuth(srv.handleAvatar))
 
 	mux.HandleFunc("GET /login", srv.handleLoginPage)
-	mux.HandleFunc("POST /login", srv.handleLoginSubmit)
-	mux.HandleFunc("GET /logout", srv.handleLogout)
+	post("/login", srv.handleLoginSubmit)
+	post("/logout", srv.handleLogout)
 	if srv.oauthCfg != nil {
 		mux.HandleFunc("GET /auth/discord/login", srv.handleDiscordLogin)
 		mux.HandleFunc("GET /auth/discord/callback", srv.handleDiscordCallback)
@@ -316,22 +320,48 @@ func (srv *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /{$}", srv.requireAuth(srv.handleIndex))
 	mux.HandleFunc("GET /g/{guildID}", srv.requireAuth(srv.requireGuildAccess(srv.handleGuildPage)))
 	mux.HandleFunc("GET /g/{guildID}/events", srv.requireAuth(srv.requireGuildAccess(srv.handleEvents)))
-	mux.HandleFunc("POST /g/{guildID}/join", srv.requireAuth(srv.requireGuildAccess(srv.handleJoin)))
-	mux.HandleFunc("POST /g/{guildID}/leave", srv.requireAuth(srv.requireGuildAccess(srv.requireVoicePresence(srv.handleLeave))))
-	mux.HandleFunc("POST /g/{guildID}/play", srv.requireAuth(srv.requireGuildAccess(srv.handlePlay)))
+	post("/g/{guildID}/join", srv.requireAuth(srv.requireGuildAccess(srv.handleJoin)))
+	post("/g/{guildID}/leave", srv.requireAuth(srv.requireGuildAccess(srv.requireVoicePresence(srv.handleLeave))))
+	post("/g/{guildID}/play", srv.requireAuth(srv.requireGuildAccess(srv.handlePlay)))
 	mux.HandleFunc("GET /g/{guildID}/suggest", srv.requireAuth(srv.requireGuildAccess(srv.handleSuggest)))
-	mux.HandleFunc("POST /g/{guildID}/pause", srv.requireAuth(srv.requireGuildAccess(srv.requireVoicePresence(srv.handlePause))))
-	mux.HandleFunc("POST /g/{guildID}/resume", srv.requireAuth(srv.requireGuildAccess(srv.requireVoicePresence(srv.handleResume))))
-	mux.HandleFunc("POST /g/{guildID}/skip", srv.requireAuth(srv.requireGuildAccess(srv.requireVoicePresence(srv.handleSkip))))
-	mux.HandleFunc("POST /g/{guildID}/stop", srv.requireAuth(srv.requireGuildAccess(srv.requireVoicePresence(srv.handleStop))))
-	mux.HandleFunc("POST /g/{guildID}/volume", srv.requireAuth(srv.requireGuildAccess(srv.requireVoicePresence(srv.handleVolume))))
-	mux.HandleFunc("POST /g/{guildID}/loop", srv.requireAuth(srv.requireGuildAccess(srv.requireVoicePresence(srv.handleLoop))))
-	mux.HandleFunc("POST /g/{guildID}/queue/remove", srv.requireAuth(srv.requireGuildAccess(srv.requireVoicePresence(srv.handleQueueRemove))))
-	mux.HandleFunc("POST /g/{guildID}/queue/play", srv.requireAuth(srv.requireGuildAccess(srv.requireVoicePresence(srv.handleQueuePlayNow))))
-	mux.HandleFunc("POST /g/{guildID}/queue/reorder", srv.requireAuth(srv.requireGuildAccess(srv.requireVoicePresence(srv.handleQueueReorder))))
-	mux.HandleFunc("POST /g/{guildID}/history/requeue", srv.requireAuth(srv.requireGuildAccess(srv.requireVoicePresence(srv.handleHistoryRequeue))))
+	post("/g/{guildID}/pause", srv.requireAuth(srv.requireGuildAccess(srv.requireVoicePresence(srv.handlePause))))
+	post("/g/{guildID}/resume", srv.requireAuth(srv.requireGuildAccess(srv.requireVoicePresence(srv.handleResume))))
+	post("/g/{guildID}/skip", srv.requireAuth(srv.requireGuildAccess(srv.requireVoicePresence(srv.handleSkip))))
+	post("/g/{guildID}/stop", srv.requireAuth(srv.requireGuildAccess(srv.requireVoicePresence(srv.handleStop))))
+	post("/g/{guildID}/volume", srv.requireAuth(srv.requireGuildAccess(srv.requireVoicePresence(srv.handleVolume))))
+	post("/g/{guildID}/loop", srv.requireAuth(srv.requireGuildAccess(srv.requireVoicePresence(srv.handleLoop))))
+	post("/g/{guildID}/queue/remove", srv.requireAuth(srv.requireGuildAccess(srv.requireVoicePresence(srv.handleQueueRemove))))
+	post("/g/{guildID}/queue/play", srv.requireAuth(srv.requireGuildAccess(srv.requireVoicePresence(srv.handleQueuePlayNow))))
+	post("/g/{guildID}/queue/reorder", srv.requireAuth(srv.requireGuildAccess(srv.requireVoicePresence(srv.handleQueueReorder))))
+	post("/g/{guildID}/history/requeue", srv.requireAuth(srv.requireGuildAccess(srv.requireVoicePresence(srv.handleHistoryRequeue))))
 
 	return mux
+}
+
+func (srv *Server) requireSameOrigin(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		origin := r.Header.Get("Origin")
+		if origin == "" {
+			site := r.Header.Get("Sec-Fetch-Site")
+			if site == "" || site == "none" || site == "same-origin" {
+				next(w, r)
+				return
+			}
+			http.Error(w, "cross-origin request rejected", http.StatusForbidden)
+			return
+		}
+
+		u, err := url.Parse(origin)
+		scheme := "http"
+		if isSecureRequest(r) {
+			scheme = "https"
+		}
+		if err != nil || u.Scheme != scheme || !strings.EqualFold(u.Host, r.Host) || u.Path != "" || u.User != nil {
+			http.Error(w, "cross-origin request rejected", http.StatusForbidden)
+			return
+		}
+		next(w, r)
+	}
 }
 
 // requireAuth is a no-op when neither Discord OAuth nor WEB_AUTH_TOKEN is
