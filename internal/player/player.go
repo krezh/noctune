@@ -258,6 +258,11 @@ func (gp *GuildPlayer) Join(ctx context.Context, channelID string) error {
 	}
 
 	gp.mu.Lock()
+	if gp.closed {
+		gp.mu.Unlock()
+		closeVoiceConnection(conn)
+		return fmt.Errorf("player is closed")
+	}
 	oldConn := gp.voiceConn
 	gp.voiceConn = conn
 	gp.voiceChannelID = channelID
@@ -319,7 +324,6 @@ func (gp *GuildPlayer) leave(ctx context.Context) error {
 func (gp *GuildPlayer) close(ctx context.Context) error {
 	gp.mu.Lock()
 	gp.closed = true
-	loopStarted := gp.loopStarted
 	if gp.idleTimer != nil {
 		gp.idleTimer.Stop()
 		gp.idleTimer = nil
@@ -330,6 +334,9 @@ func (gp *GuildPlayer) close(ctx context.Context) error {
 	if err := gp.leave(ctx); err != nil {
 		return err
 	}
+	gp.mu.Lock()
+	loopStarted := gp.loopStarted
+	gp.mu.Unlock()
 	if !loopStarted {
 		return nil
 	}

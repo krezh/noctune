@@ -325,3 +325,49 @@ func TestJoinClosesSupersededConnection(t *testing.T) {
 		t.Fatalf("manager Close() error = %v", err)
 	}
 }
+
+func TestManagerCloseRejectsPendingJoin(t *testing.T) {
+	conn := &blockingVoiceConn{openStarted: make(chan struct{}), openRelease: make(chan struct{})}
+	gp := &GuildPlayer{
+		GuildID:          "123",
+		createVoiceConn:  func(snowflake.ID) voiceConnection { return conn },
+		resolver:         unusedResolver{},
+		cfg:              &config.Config{IdleDisconnectSeconds: 0},
+		subs:             make(map[chan State]struct{}),
+		playSignal:       make(chan struct{}, 1),
+		stopLoopCh:       make(chan struct{}),
+		loopDone:         make(chan struct{}),
+		resolutionCancel: make(map[uint64]context.CancelFunc),
+	}
+	manager := &Manager{players: map[string]*GuildPlayer{"123": gp}}
+
+	joinDone := make(chan error, 1)
+	go func() { joinDone <- gp.Join(context.Background(), "456") }()
+	<-conn.openStarted
+	closeDone := make(chan error, 1)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		closeDone <- manager.Close(ctx)
+	}()
+
+	for {
+		gp.mu.Lock()
+		closed := gp.closed
+		gp.mu.Unlock()
+		if closed {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	close(conn.openRelease)
+	if err := <-joinDone; err == nil {
+		t.Fatal("pending Join succeeded during manager shutdown")
+	}
+	if err := <-closeDone; err != nil {
+		t.Fatalf("manager Close() error = %v", err)
+	}
+	if got := conn.closed.Load(); got != 1 {
+		t.Fatalf("rejected connection closed %d times, want 1", got)
+	}
+}
