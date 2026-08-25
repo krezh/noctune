@@ -39,6 +39,10 @@ type Bot struct {
 
 	watchMu       sync.Mutex
 	watchedGuilds map[string]struct{}
+	watchCtx      context.Context
+	watchCancel   context.CancelFunc
+	watchWG       sync.WaitGroup
+	closed        bool
 }
 
 // NewClient creates the underlying disgo bot.Client with the intents and
@@ -64,12 +68,15 @@ func NewClient(cfg *config.Config) (*bot.Client, error) {
 }
 
 func New(cfg *config.Config, client *bot.Client, players *player.Manager, resolver *resolve.Resolver) *Bot {
+	watchCtx, watchCancel := context.WithCancel(context.Background())
 	b := &Bot{
 		Client:        client,
 		players:       players,
 		resolver:      resolver,
 		cfg:           cfg,
 		watchedGuilds: make(map[string]struct{}),
+		watchCtx:      watchCtx,
+		watchCancel:   watchCancel,
 	}
 	client.EventManager.AddEventListeners(&events.ListenerAdapter{
 		OnReady:                         b.onReady,
@@ -83,8 +90,31 @@ func (b *Bot) Open() error {
 }
 
 func (b *Bot) Close() error {
-	b.Client.Close(context.Background())
-	return nil
+	return b.CloseContext(context.Background())
+}
+
+func (b *Bot) CloseContext(ctx context.Context) error {
+	b.watchMu.Lock()
+	if !b.closed {
+		b.closed = true
+		b.watchCancel()
+	}
+	b.watchMu.Unlock()
+	if b.Client != nil {
+		b.Client.Close(ctx)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		b.watchWG.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func (b *Bot) onReady(event *events.Ready) {
@@ -355,17 +385,30 @@ func (b *Bot) handleLoop(event *events.ApplicationCommandInteractionCreate, guil
 // voice channel status in sync with playback state. No-ops if already watching.
 func (b *Bot) watchGuild(guildID string) {
 	b.watchMu.Lock()
+	if b.closed {
+		b.watchMu.Unlock()
+		return
+	}
 	if _, ok := b.watchedGuilds[guildID]; ok {
 		b.watchMu.Unlock()
 		return
 	}
 	b.watchedGuilds[guildID] = struct{}{}
+	b.watchWG.Add(1)
 	b.watchMu.Unlock()
+	defer b.watchWG.Done()
 
-	ch, _ := b.players.Get(guildID).Subscribe() // intentionally no cancel; runs for bot lifetime
+	ch, cancel := b.players.Get(guildID).Subscribe()
+	defer cancel()
 
 	var lastChannelID string
-	for state := range ch {
+	for {
+		var state player.State
+		select {
+		case state = <-ch:
+		case <-b.watchCtx.Done():
+			return
+		}
 		channelID := state.VoiceChannelID
 		if channelID == "" {
 			channelID = lastChannelID
