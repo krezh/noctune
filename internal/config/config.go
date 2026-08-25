@@ -65,6 +65,9 @@ func Load() (*Config, error) {
 	if cfg.DefaultVolume < 0 || cfg.DefaultVolume > 100 {
 		return nil, fmt.Errorf("DEFAULT_VOLUME must be between 0 and 100")
 	}
+	if (cfg.DiscordClientID == "") != (cfg.DiscordClientSecret == "") {
+		return nil, fmt.Errorf("DISCORD_CLIENT_ID and DISCORD_CLIENT_SECRET must be set together")
+	}
 	if cfg.DiscordOAuthEnabled() {
 		if cfg.DiscordOAuthRedirectURL == "" {
 			if cfg.WebPublicURL == "" {
