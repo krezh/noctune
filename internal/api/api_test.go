@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"html/template"
 	"io"
 	"net/http"
@@ -42,6 +43,25 @@ func TestRequireSameOrigin(t *testing.T) {
 				t.Fatalf("status = %d, want %d", rr.Code, tc.want)
 			}
 		})
+	}
+}
+
+func TestServerCloseWaitsForSearchWorkers(t *testing.T) {
+	searchCtx, searchCancel := context.WithCancel(context.Background())
+	srv := &Server{searchCtx: searchCtx, searchCancel: searchCancel}
+	srv.searchWG.Add(1)
+	go func() {
+		defer srv.searchWG.Done()
+		<-searchCtx.Done()
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := srv.Close(ctx); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	if !srv.closed {
+		t.Fatal("server was not marked closed")
 	}
 }
 

@@ -219,8 +219,12 @@ type Server struct {
 	oauthCfg *oauth2.Config
 	avatars  *avatarCache
 
-	searchMu sync.Mutex
-	searchCh map[string]chan searchJob
+	searchMu     sync.Mutex
+	searchCh     map[string]chan searchJob
+	searchCtx    context.Context
+	searchCancel context.CancelFunc
+	searchWG     sync.WaitGroup
+	closed       bool
 }
 
 func New(cfg *config.Config, client *bot.Client, players *player.Manager, resolver *resolve.Resolver) (*Server, error) {
@@ -230,11 +234,14 @@ func New(cfg *config.Config, client *bot.Client, players *player.Manager, resolv
 	if err != nil {
 		return nil, fmt.Errorf("parse templates: %w", err)
 	}
+	searchCtx, searchCancel := context.WithCancel(context.Background())
 	srv := &Server{
 		cfg: cfg, client: client, players: players, resolver: resolver, tmpl: tmpl,
-		sessions: newSessionStore(cfg.SessionSecret),
-		avatars:  newAvatarCache(),
-		searchCh: make(map[string]chan searchJob),
+		sessions:     newSessionStore(cfg.SessionSecret),
+		avatars:      newAvatarCache(),
+		searchCh:     make(map[string]chan searchJob),
+		searchCtx:    searchCtx,
+		searchCancel: searchCancel,
 	}
 	if cfg.DiscordOAuthEnabled() {
 		srv.oauthCfg = newOAuthConfig(cfg.DiscordClientID, cfg.DiscordClientSecret, cfg.DiscordOAuthRedirectURL)
@@ -260,21 +267,36 @@ type searchJob struct {
 // order, same as if they'd been typed in one after another.
 func (srv *Server) queueSearch(guildID, query, requestedBy, requestedByAvatarURL string) {
 	srv.searchMu.Lock()
+	if srv.closed {
+		srv.searchMu.Unlock()
+		return
+	}
 	ch, ok := srv.searchCh[guildID]
 	if !ok {
 		ch = make(chan searchJob, 64)
 		srv.searchCh[guildID] = ch
+		srv.searchWG.Add(1)
 		go srv.runSearchWorker(guildID, ch)
 	}
 	srv.searchMu.Unlock()
 	generation := srv.players.Get(guildID).ResolutionGeneration()
-	ch <- searchJob{query: query, requestedBy: requestedBy, requestedByAvatarURL: requestedByAvatarURL, generation: generation}
+	select {
+	case ch <- searchJob{query: query, requestedBy: requestedBy, requestedByAvatarURL: requestedByAvatarURL, generation: generation}:
+	case <-srv.searchCtx.Done():
+	}
 }
 
 func (srv *Server) runSearchWorker(guildID string, ch <-chan searchJob) {
+	defer srv.searchWG.Done()
 	gp := srv.players.Get(guildID)
-	for job := range ch {
-		ctx, finish, ok := gp.BeginResolution(context.Background(), job.generation)
+	for {
+		var job searchJob
+		select {
+		case job = <-ch:
+		case <-srv.searchCtx.Done():
+			return
+		}
+		ctx, finish, ok := gp.BeginResolution(srv.searchCtx, job.generation)
 		if !ok {
 			continue
 		}
@@ -292,6 +314,27 @@ func (srv *Server) runSearchWorker(guildID string, ch <-chan searchJob) {
 		if err != nil && !errors.Is(err, context.Canceled) {
 			log.Printf("noctune: web resolve %q: %v", job.query, err)
 		}
+	}
+}
+
+func (srv *Server) Close(ctx context.Context) error {
+	srv.searchMu.Lock()
+	if !srv.closed {
+		srv.closed = true
+		srv.searchCancel()
+	}
+	srv.searchMu.Unlock()
+
+	done := make(chan struct{})
+	go func() {
+		srv.searchWG.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 }
 
