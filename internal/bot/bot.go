@@ -86,7 +86,11 @@ func New(cfg *config.Config, client *bot.Client, players *player.Manager, resolv
 }
 
 func (b *Bot) Open() error {
-	return b.Client.OpenGateway(context.Background())
+	return b.OpenContext(context.Background())
+}
+
+func (b *Bot) OpenContext(ctx context.Context) error {
+	return b.Client.OpenGateway(ctx)
 }
 
 func (b *Bot) Close() error {

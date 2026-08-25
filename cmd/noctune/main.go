@@ -6,6 +6,8 @@ package main
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -30,17 +32,22 @@ const (
 )
 
 func main() {
-	cfg, err := config.Load()
-	if err != nil {
-		log.Fatalf("noctune: config: %v", err)
-	}
-
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	if err := run(ctx); err != nil {
+		log.Fatalf("noctune: %v", err)
+	}
+}
+
+func run(ctx context.Context) error {
+	cfg, err := config.Load()
+	if err != nil {
+		return fmt.Errorf("config: %w", err)
+	}
 
 	client, err := bot.NewClient(cfg)
 	if err != nil {
-		log.Fatalf("noctune: create discord client: %v", err)
+		return fmt.Errorf("create discord client: %w", err)
 	}
 
 	ytClient := youtube.New(cfg.YtDlpPath, cfg.CacheDir)
@@ -49,33 +56,56 @@ func main() {
 	players := player.NewManager(client, ytClient, cfg)
 	discordBot := bot.New(cfg, client, players, resolver)
 
-	if err := discordBot.Open(); err != nil {
-		log.Fatalf("noctune: connect to discord: %v", err)
+	if err := discordBot.OpenContext(ctx); err != nil {
+		return fmt.Errorf("connect to discord: %w", err)
 	}
-	defer func() {
-		if err := discordBot.Close(); err != nil {
-			log.Printf("noctune: close discord connection: %v", err)
-		}
-	}()
 
 	webServer, err := api.New(cfg, client, players, resolver)
 	if err != nil {
-		log.Fatalf("noctune: create web server: %v", err)
+		closeCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+		defer cancel()
+		_ = discordBot.CloseContext(closeCtx)
+		return fmt.Errorf("create web server: %w", err)
 	}
 
 	httpServer := newHTTPServer(cfg.WebListenAddr, webServer.Handler())
+	serverErr := make(chan error, 1)
 	go func() {
 		log.Printf("noctune: web GUI listening on %s", cfg.WebListenAddr)
-		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("noctune: web server: %v", err)
+		err := httpServer.ListenAndServe()
+		if errors.Is(err, http.ErrServerClosed) {
+			err = nil
 		}
+		serverErr <- err
 	}()
 
-	<-ctx.Done()
+	var serveErr error
+	select {
+	case <-ctx.Done():
+	case serveErr = <-serverErr:
+	}
 	log.Println("noctune: shutting down")
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
-	_ = httpServer.Shutdown(shutdownCtx)
+
+	var shutdownErrs []error
+	if err := httpServer.Shutdown(shutdownCtx); err != nil {
+		shutdownErrs = append(shutdownErrs, fmt.Errorf("shut down web server: %w", err))
+		_ = httpServer.Close()
+	}
+	if err := webServer.Close(shutdownCtx); err != nil {
+		shutdownErrs = append(shutdownErrs, fmt.Errorf("close web workers: %w", err))
+	}
+	if err := players.Close(shutdownCtx); err != nil {
+		shutdownErrs = append(shutdownErrs, fmt.Errorf("close players: %w", err))
+	}
+	if err := discordBot.CloseContext(shutdownCtx); err != nil {
+		shutdownErrs = append(shutdownErrs, fmt.Errorf("close discord: %w", err))
+	}
+	if serveErr != nil {
+		shutdownErrs = append(shutdownErrs, fmt.Errorf("web server: %w", serveErr))
+	}
+	return errors.Join(shutdownErrs...)
 }
 
 func newHTTPServer(addr string, handler http.Handler) *http.Server {
