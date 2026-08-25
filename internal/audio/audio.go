@@ -60,9 +60,10 @@ type Handle struct {
 	stderrMu  sync.Mutex
 	stderrBuf bytes.Buffer
 
-	stopCh chan struct{}
-	doneCh chan error
-	frames chan []byte // decoded packets, read ahead of ProvideOpusFrame
+	stopCh   chan struct{}
+	stopOnce sync.Once
+	doneCh   chan error
+	frames   chan []byte // decoded packets, read ahead of ProvideOpusFrame
 
 	readErrMu sync.Mutex
 	readErr   error // set by readLoop on a non-EOF failure
@@ -396,14 +397,12 @@ func (h *Handle) SetVolume(pct int) error {
 // so a readLoop goroutine blocked reading a packet from a stalled process
 // unblocks immediately instead of waiting for it to notice stopCh.
 func (h *Handle) Stop() {
-	select {
-	case <-h.stopCh:
-	default:
+	h.stopOnce.Do(func() {
 		close(h.stopCh)
-	}
-	if h.cmd.Process != nil {
-		_ = h.cmd.Process.Kill()
-	}
+		if h.cmd != nil && h.cmd.Process != nil {
+			_ = h.cmd.Process.Kill()
+		}
+	})
 }
 
 // Done reports how the track ended: nil for a natural finish or an
