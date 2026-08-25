@@ -63,6 +63,7 @@ type Handle struct {
 	stopCh   chan struct{}
 	stopOnce sync.Once
 	doneCh   chan error
+	doneOnce sync.Once
 	frames   chan []byte // decoded packets, read ahead of ProvideOpusFrame
 
 	readErrMu sync.Mutex
@@ -242,13 +243,12 @@ func (h *Handle) readLoop() {
 				} else {
 					log.Printf("audio: encode EOF after %d frames provided", h.framesSent.Load())
 				}
-				h.doneCh <- nil
 			} else {
 				h.readErrMu.Lock()
 				h.readErr = fmt.Errorf("%w: %s", err, h.ffmpegMessages())
 				h.readErrMu.Unlock()
 				log.Printf("audio: ogg read error after %d frames provided: %v", h.framesSent.Load(), err)
-				h.doneCh <- h.readErr
+				h.complete(h.readErr)
 			}
 			return
 		}
@@ -262,7 +262,7 @@ func (h *Handle) readLoop() {
 		case h.frames <- frame:
 		case <-h.stopCh:
 			log.Printf("audio: stopped after %d frames provided", h.framesSent.Load())
-			h.doneCh <- nil
+			h.complete(nil)
 			return
 		}
 
@@ -304,6 +304,7 @@ func (h *Handle) ProvideOpusFrame() ([]byte, error) {
 			h.readErrMu.Lock()
 			err := h.readErr
 			h.readErrMu.Unlock()
+			h.complete(err)
 			if err != nil {
 				return nil, err
 			}
@@ -329,6 +330,7 @@ func (h *Handle) ProvideOpusFrame() ([]byte, error) {
 			h.readErrMu.Lock()
 			err := h.readErr
 			h.readErrMu.Unlock()
+			h.complete(err)
 			if err != nil {
 				return nil, err
 			}
@@ -399,10 +401,15 @@ func (h *Handle) SetVolume(pct int) error {
 func (h *Handle) Stop() {
 	h.stopOnce.Do(func() {
 		close(h.stopCh)
+		h.complete(nil)
 		if h.cmd != nil && h.cmd.Process != nil {
 			_ = h.cmd.Process.Kill()
 		}
 	})
+}
+
+func (h *Handle) complete(err error) {
+	h.doneOnce.Do(func() { h.doneCh <- err })
 }
 
 // Done reports how the track ended: nil for a natural finish or an
