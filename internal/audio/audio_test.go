@@ -10,7 +10,7 @@ import (
 )
 
 func TestStopIsConcurrentSafe(t *testing.T) {
-	h := &Handle{stopCh: make(chan struct{}), doneCh: make(chan error, 1)}
+	h := &Handle{stopCh: make(chan struct{}), doneCh: make(chan error, 1), cleanupDone: make(chan struct{})}
 
 	var wg sync.WaitGroup
 	for range 100 {
@@ -22,6 +22,15 @@ func TestStopIsConcurrentSafe(t *testing.T) {
 	case <-h.stopCh:
 	default:
 		t.Fatal("Stop did not close stopCh")
+	}
+	select {
+	case <-h.Done():
+		t.Fatal("Done fired before cleanup completed")
+	default:
+	}
+	close(h.cleanupDone)
+	if err := <-h.Done(); err != nil {
+		t.Fatalf("Done() error = %v, want nil", err)
 	}
 }
 

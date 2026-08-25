@@ -61,11 +61,12 @@ type Handle struct {
 	stderrBuf  bytes.Buffer
 	stderrDone chan struct{}
 
-	stopCh   chan struct{}
-	stopOnce sync.Once
-	doneCh   chan error
-	doneOnce sync.Once
-	frames   chan []byte // decoded packets, read ahead of ProvideOpusFrame
+	stopCh      chan struct{}
+	stopOnce    sync.Once
+	doneCh      chan error
+	doneOnce    sync.Once
+	cleanupDone chan struct{}
+	frames      chan []byte // decoded packets, read ahead of ProvideOpusFrame
 
 	readErrMu sync.Mutex
 	readErr   error // set by readLoop on a non-EOF failure
@@ -173,15 +174,16 @@ func Play(stream io.ReadCloser, opts Options) (*Handle, error) {
 	}
 
 	h := &Handle{
-		cmd:        cmd,
-		ogg:        newOggDemuxer(stdout),
-		stream:     stream,
-		zmqSocket:  sockPath,
-		stopCh:     make(chan struct{}),
-		doneCh:     make(chan error, 1),
-		frames:     make(chan []byte, frameBufferSize),
-		resumeCh:   make(chan struct{}),
-		stderrDone: make(chan struct{}),
+		cmd:         cmd,
+		ogg:         newOggDemuxer(stdout),
+		stream:      stream,
+		zmqSocket:   sockPath,
+		stopCh:      make(chan struct{}),
+		doneCh:      make(chan error, 1),
+		cleanupDone: make(chan struct{}),
+		frames:      make(chan []byte, frameBufferSize),
+		resumeCh:    make(chan struct{}),
+		stderrDone:  make(chan struct{}),
 	}
 	log.Printf("audio: encode session started")
 	go h.readStderr(stderr)
@@ -272,6 +274,7 @@ readFrames:
 	waitErr := h.cmd.Wait()
 	<-h.stderrDone
 	_ = os.Remove(h.zmqSocket)
+	close(h.cleanupDone)
 
 	select {
 	case <-h.stopCh:
@@ -422,10 +425,13 @@ func (h *Handle) SetVolume(pct int) error {
 func (h *Handle) Stop() {
 	h.stopOnce.Do(func() {
 		close(h.stopCh)
-		h.complete(nil)
 		if h.cmd != nil && h.cmd.Process != nil {
 			_ = h.cmd.Process.Kill()
 		}
+		go func() {
+			<-h.cleanupDone
+			h.complete(nil)
+		}()
 	})
 }
 
