@@ -50,7 +50,7 @@ func (s *session) canAccessGuild(guildID string) bool {
 type sessionStore struct {
 	key    []byte
 	mu     sync.RWMutex
-	active map[string]struct{}
+	active map[string]chan struct{}
 }
 
 // newSessionStore builds the signer from cfg.SessionSecret. Left unset, it
@@ -64,7 +64,7 @@ func newSessionStore(secret string) *sessionStore {
 		}
 		log.Print("noctune: SESSION_SECRET is not set — generated a random key for this run")
 	}
-	return &sessionStore{key: key, active: make(map[string]struct{})}
+	return &sessionStore{key: key, active: make(map[string]chan struct{})}
 }
 
 func (s *sessionStore) sign(payload []byte) string {
@@ -86,7 +86,7 @@ func (s *sessionStore) create(sess *session) (string, error) {
 	}
 	encoded := base64.RawURLEncoding.EncodeToString(payload)
 	s.mu.Lock()
-	s.active[sess.ID] = struct{}{}
+	s.active[sess.ID] = make(chan struct{})
 	s.mu.Unlock()
 	return encoded + "." + s.sign(payload), nil
 }
@@ -131,8 +131,18 @@ func (s *sessionStore) revoke(cookieValue string) {
 		return
 	}
 	s.mu.Lock()
-	delete(s.active, sess.ID)
+	if done, active := s.active[sess.ID]; active {
+		delete(s.active, sess.ID)
+		close(done)
+	}
 	s.mu.Unlock()
+}
+
+func (s *sessionStore) revocationSignal(sessionID string) (<-chan struct{}, bool) {
+	s.mu.RLock()
+	done, active := s.active[sessionID]
+	s.mu.RUnlock()
+	return done, active
 }
 
 type contextKey int

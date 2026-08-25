@@ -95,3 +95,26 @@ func TestSessionRequiresActiveRegistryEntry(t *testing.T) {
 		t.Fatal("session without an active registry entry was accepted")
 	}
 }
+
+func TestSessionRevocationSignal(t *testing.T) {
+	store := newSessionStore("a-fixed-32-byte-plus-test-secret!!")
+	cookie, err := store.create(&session{DiscordUserID: "42"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	sess, ok := store.get(cookie)
+	if !ok {
+		t.Fatal("get: expected a valid session")
+	}
+	done, active := store.revocationSignal(sess.ID)
+	if !active {
+		t.Fatal("revocationSignal rejected active session")
+	}
+
+	store.revoke(cookie)
+	select {
+	case <-done:
+	default:
+		t.Fatal("revocation did not close the session signal")
+	}
+}

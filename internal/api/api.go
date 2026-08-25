@@ -590,6 +590,22 @@ func (srv *Server) handleGuildPage(w http.ResponseWriter, r *http.Request) {
 
 func (srv *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	guildID := r.PathValue("guildID")
+	var (
+		revoked     <-chan struct{}
+		expired     <-chan time.Time
+		expiryTimer *time.Timer
+	)
+	if sess := sessionFromContext(r.Context()); sess != nil {
+		var active bool
+		revoked, active = srv.sessions.revocationSignal(sess.ID)
+		if !active {
+			srv.redirectLogin(w, r)
+			return
+		}
+		expiryTimer = time.NewTimer(time.Until(sess.ExpiresAt))
+		defer expiryTimer.Stop()
+		expired = expiryTimer.C
+	}
 	id, err := snowflake.Parse(guildID)
 	if err != nil {
 		http.NotFound(w, r)
@@ -674,6 +690,10 @@ func (srv *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 			}
 			send(st)
 		case <-r.Context().Done():
+			return
+		case <-revoked:
+			return
+		case <-expired:
 			return
 		}
 	}
