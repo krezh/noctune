@@ -1,5 +1,40 @@
 # Changelog
 
+## [0.1.5](https://github.com/krezh/noctune/compare/0.1.4...0.1.5) (2026-08-25)
+
+
+### Features
+
+* **api:** add graceful search worker shutdown ([9ac00eb](https://github.com/krezh/noctune/commit/9ac00eb8fa0a7c3fbb43454176d418cbfb0de9ec))
+* **bot:** add graceful watcher shutdown ([14de10d](https://github.com/krezh/noctune/commit/14de10dc1bf144d35d75169351a8095a1c99f6e2))
+* **player:** add graceful manager shutdown ([2d5b1a0](https://github.com/krezh/noctune/commit/2d5b1a07a765b4746ce3c90520e6ea94af617ca6))
+
+
+### Bug Fixes
+
+* **api:** close unauthorized SSE streams ([95cd7c4](https://github.com/krezh/noctune/commit/95cd7c4af078a23fa2e6f8d6f81d77a1ffc332f8))
+* **api:** enforce same-origin mutations ([96fd27d](https://github.com/krezh/noctune/commit/96fd27d15ad623f5fa8a05faf0c0269f84bc7c91))
+* **app:** coordinate graceful shutdown ([66d8eea](https://github.com/krezh/noctune/commit/66d8eea0428f9450cf8fcd35ae99db8ea7a8774a))
+* **audio:** drain buffered frames before completion ([5083b6c](https://github.com/krezh/noctune/commit/5083b6c44d962ca95c11b88fa78cfb5ed76082eb))
+* **audio:** make playback stop idempotent ([f1e554e](https://github.com/krezh/noctune/commit/f1e554edba0bec6a91bad4809d3fc4f46bb9b930))
+* **audio:** propagate encoder and source failures ([b1eb890](https://github.com/krezh/noctune/commit/b1eb890b8507db7ec5f9d040f66c43384c988f37))
+* **audio:** signal completion after cleanup ([ea30205](https://github.com/krezh/noctune/commit/ea3020534711cfc79559b2a8da39011e5e1ea01f))
+* **auth:** preserve sessions across restarts ([9df9a24](https://github.com/krezh/noctune/commit/9df9a2447451fb1856be483fd7fe1325afc230af))
+* **auth:** revoke logged-out sessions ([ab8b6c0](https://github.com/krezh/noctune/commit/ab8b6c0336359f5d245bf5d7f170bc45fd294bec))
+* **config:** reject partial Discord OAuth credentials ([692863f](https://github.com/krezh/noctune/commit/692863f593b3d2a76e2b82adb8aad616665ccea0))
+* **player:** cancel invalidated track resolution ([e78c40c](https://github.com/krezh/noctune/commit/e78c40c0f5f42e77263d191fc4b5f49e0881f3e3))
+* **player:** cancel invalidated track startup ([a1b9af4](https://github.com/krezh/noctune/commit/a1b9af437ae73aedb5ca252923094aba4030411e))
+* **player:** reject joins during shutdown ([d144715](https://github.com/krezh/noctune/commit/d1447156d5463be985238f73b4954c7ddbfa0b3f))
+* **player:** reject stale playback transitions ([4b49da8](https://github.com/krezh/noctune/commit/4b49da8ac5906eff05e844f66baec625e0585121))
+* **player:** serialize voice connection transitions ([4d35b83](https://github.com/krezh/noctune/commit/4d35b8304777418fce8db3e63f7edc9ef5979396))
+* **server:** bound HTTP connection lifetimes ([3de9c4a](https://github.com/krezh/noctune/commit/3de9c4ab90b7421ae8e4959b51d6b52775c0ae71))
+* **ui:** show complete loop button hover border ([6c85265](https://github.com/krezh/noctune/commit/6c8526559b3b4edca39696f47ddeab7011564d08))
+
+
+### Tests
+
+* cover lifecycle and playback invariants ([9f676a4](https://github.com/krezh/noctune/commit/9f676a453663c01d835b78d06de7d9fd0b5c9ed2))
+
 ## [0.1.4](https://github.com/krezh/noctune/compare/0.1.3...0.1.4) (2026-08-23)
 
 
