@@ -125,7 +125,7 @@ func IsPlaylistURL(input string) bool {
 // yt-dlp outputs it, rather than buffering all results first. fn is called
 // from the same goroutine in order; return from ResolvePlaylistEach means
 // all entries have been delivered (or an error aborted the run).
-func (c *Client) ResolvePlaylistEach(ctx context.Context, playlistURL string, fn func(*Result)) error {
+func (c *Client) ResolvePlaylistEach(ctx context.Context, playlistURL string, fn func(*Result) error) error {
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 
@@ -157,7 +157,11 @@ func (c *Client) ResolvePlaylistEach(ctx context.Context, playlistURL string, fn
 		if err := json.Unmarshal([]byte(line), &entry); err != nil {
 			continue
 		}
-		fn(entry.toResult())
+		if err := fn(entry.toResult()); err != nil {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+			return err
+		}
 	}
 	if err := scanner.Err(); err != nil {
 		_ = cmd.Process.Kill()
@@ -165,8 +169,11 @@ func (c *Client) ResolvePlaylistEach(ctx context.Context, playlistURL string, fn
 		return fmt.Errorf("yt-dlp playlist read: %w", err)
 	}
 
-	if err := cmd.Wait(); err != nil && stderr.Len() > 0 {
-		return fmt.Errorf("yt-dlp playlist %q: %w: %s", playlistURL, err, stderr.String())
+	if err := cmd.Wait(); err != nil {
+		if stderr.Len() > 0 {
+			return fmt.Errorf("yt-dlp playlist %q: %w: %s", playlistURL, err, stderr.String())
+		}
+		return fmt.Errorf("yt-dlp playlist %q: %w", playlistURL, err)
 	}
 	return nil
 }
@@ -175,8 +182,9 @@ func (c *Client) ResolvePlaylistEach(ctx context.Context, playlistURL string, fn
 // streaming results as they arrive, use ResolvePlaylistEach instead.
 func (c *Client) ResolvePlaylist(ctx context.Context, playlistURL string) ([]*Result, error) {
 	var out []*Result
-	if err := c.ResolvePlaylistEach(ctx, playlistURL, func(r *Result) {
+	if err := c.ResolvePlaylistEach(ctx, playlistURL, func(r *Result) error {
 		out = append(out, r)
+		return nil
 	}); err != nil {
 		return nil, err
 	}

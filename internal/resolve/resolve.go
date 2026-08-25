@@ -138,15 +138,15 @@ func IsMultiTrack(query string) bool {
 // For YouTube playlists this streams one entry per yt-dlp output line; for
 // Spotify albums/playlists it resolves metadata first then finds YouTube
 // audio serially; everything else resolves fully then calls fn once.
-func (r *Resolver) ResolveEach(ctx context.Context, query, requestedBy, requestedByAvatarURL string, fn func(*player.Track)) error {
+func (r *Resolver) ResolveEach(ctx context.Context, query, requestedBy, requestedByAvatarURL string, fn func(*player.Track) error) error {
 	query = strings.TrimSpace(query)
 	if query == "" {
 		return fmt.Errorf("empty query")
 	}
 
 	if youtube.IsURL(query) && youtube.IsPlaylistURL(query) {
-		return r.youtube.ResolvePlaylistEach(ctx, query, func(res *youtube.Result) {
-			fn(youtubeToPlayerTrack(res, requestedBy, requestedByAvatarURL))
+		return r.youtube.ResolvePlaylistEach(ctx, query, func(res *youtube.Result) error {
+			return fn(youtubeToPlayerTrack(res, requestedBy, requestedByAvatarURL))
 		})
 	}
 
@@ -164,12 +164,20 @@ func (r *Resolver) ResolveEach(ctx context.Context, query, requestedBy, requeste
 			return fmt.Errorf("resolve spotify %s: %w", kind, err)
 		}
 		for _, st := range sts {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			t, terr := r.spotifyToPlayerTrack(ctx, st, requestedBy, requestedByAvatarURL)
 			if terr != nil {
+				if err := ctx.Err(); err != nil {
+					return err
+				}
 				log.Printf("noctune: skipping %q: %v", st.Title, terr)
 				continue
 			}
-			fn(t)
+			if err := fn(t); err != nil {
+				return err
+			}
 		}
 		return nil
 	}
@@ -179,7 +187,9 @@ func (r *Resolver) ResolveEach(ctx context.Context, query, requestedBy, requeste
 		return err
 	}
 	for _, t := range tracks {
-		fn(t)
+		if err := fn(t); err != nil {
+			return err
+		}
 	}
 	return nil
 }

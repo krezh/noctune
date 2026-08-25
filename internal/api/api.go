@@ -20,6 +20,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/subtle"
+	"errors"
 	"fmt"
 	"html/template"
 	"io/fs"
@@ -248,6 +249,7 @@ type searchJob struct {
 	query                string
 	requestedBy          string
 	requestedByAvatarURL string
+	generation           uint64
 }
 
 // queueSearch hands a query off to a per-guild worker and returns
@@ -265,25 +267,29 @@ func (srv *Server) queueSearch(guildID, query, requestedBy, requestedByAvatarURL
 		go srv.runSearchWorker(guildID, ch)
 	}
 	srv.searchMu.Unlock()
-	ch <- searchJob{query: query, requestedBy: requestedBy, requestedByAvatarURL: requestedByAvatarURL}
+	generation := srv.players.Get(guildID).ResolutionGeneration()
+	ch <- searchJob{query: query, requestedBy: requestedBy, requestedByAvatarURL: requestedByAvatarURL, generation: generation}
 }
 
 func (srv *Server) runSearchWorker(guildID string, ch <-chan searchJob) {
 	gp := srv.players.Get(guildID)
 	for job := range ch {
+		ctx, finish, ok := gp.BeginResolution(context.Background(), job.generation)
+		if !ok {
+			continue
+		}
 		isMulti := resolve.IsMultiTrack(job.query)
 		if isMulti {
 			gp.SetLoadingPlaylist(true)
 		}
-		err := srv.resolver.ResolveEach(context.Background(), job.query, job.requestedBy, job.requestedByAvatarURL, func(t *player.Track) {
-			if err := gp.Enqueue(t); err != nil {
-				log.Printf("noctune: web enqueue %q: %v", t.Title, err)
-			}
+		err := srv.resolver.ResolveEach(ctx, job.query, job.requestedBy, job.requestedByAvatarURL, func(t *player.Track) error {
+			return gp.EnqueueResolved(t, job.generation)
 		})
+		finish()
 		if isMulti {
 			gp.SetLoadingPlaylist(false)
 		}
-		if err != nil {
+		if err != nil && !errors.Is(err, context.Canceled) {
 			log.Printf("noctune: web resolve %q: %v", job.query, err)
 		}
 	}

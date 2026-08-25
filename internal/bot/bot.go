@@ -5,6 +5,7 @@ package bot
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -180,19 +181,28 @@ func (b *Bot) handlePlay(event *events.ApplicationCommandInteractionCreate, guil
 			trackCount int
 			enqueueErr error
 		)
-		resolveErr := b.resolver.ResolveEach(context.Background(), query, event.User().Username, avatarURL, func(t *player.Track) {
-			if enqueueErr != nil {
-				return
-			}
+		generation := gp.ResolutionGeneration()
+		resolveCtx, finishResolve, ok := gp.BeginResolution(context.Background(), generation)
+		if !ok {
+			b.followup(event, "Playback was stopped before the search started.")
+			return
+		}
+		defer finishResolve()
+		resolveErr := b.resolver.ResolveEach(resolveCtx, query, event.User().Username, avatarURL, func(t *player.Track) error {
 			if first == nil {
 				first = t
 			}
-			if err := gp.Enqueue(t); err != nil {
+			if err := gp.EnqueueResolved(t, generation); err != nil {
 				enqueueErr = err
-				return
+				return err
 			}
 			trackCount++
+			return nil
 		})
+		if errors.Is(resolveErr, context.Canceled) {
+			b.followup(event, "Search canceled.")
+			return
+		}
 		if trackCount == 0 {
 			if enqueueErr != nil {
 				b.followup(event, enqueueErr.Error())

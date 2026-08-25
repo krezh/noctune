@@ -117,21 +117,24 @@ type GuildPlayer struct {
 	resolver StreamResolver
 	cfg      *config.Config
 
-	mu              sync.Mutex
-	voiceConn       voiceapi.Conn
-	voiceChannelID  string
-	queue           []*Track
-	current         *Track
-	history         []*Track
-	status          Status
-	volume          int
-	loop            LoopMode
-	handle          *audio.Handle
-	trackCancel     context.CancelFunc
-	playbackGen     uint64
-	idleTimer       *time.Timer
-	subs            map[chan State]struct{}
-	loadingPlaylist bool
+	mu               sync.Mutex
+	voiceConn        voiceapi.Conn
+	voiceChannelID   string
+	queue            []*Track
+	current          *Track
+	history          []*Track
+	status           Status
+	volume           int
+	loop             LoopMode
+	handle           *audio.Handle
+	trackCancel      context.CancelFunc
+	playbackGen      uint64
+	resolutionGen    uint64
+	resolutionSeq    uint64
+	resolutionCancel map[uint64]context.CancelFunc
+	idleTimer        *time.Timer
+	subs             map[chan State]struct{}
+	loadingPlaylist  bool
 
 	startOnce  sync.Once
 	playSignal chan struct{}
@@ -163,16 +166,17 @@ func (m *Manager) Get(guildID string) *GuildPlayer {
 		return gp
 	}
 	gp := &GuildPlayer{
-		GuildID:    guildID,
-		client:     m.client,
-		resolver:   m.resolver,
-		cfg:        m.cfg,
-		volume:     m.cfg.DefaultVolume,
-		loop:       LoopOff,
-		status:     StatusIdle,
-		subs:       make(map[chan State]struct{}),
-		playSignal: make(chan struct{}, 1),
-		stopLoopCh: make(chan struct{}),
+		GuildID:          guildID,
+		client:           m.client,
+		resolver:         m.resolver,
+		cfg:              m.cfg,
+		volume:           m.cfg.DefaultVolume,
+		loop:             LoopOff,
+		status:           StatusIdle,
+		subs:             make(map[chan State]struct{}),
+		playSignal:       make(chan struct{}, 1),
+		stopLoopCh:       make(chan struct{}),
+		resolutionCancel: make(map[uint64]context.CancelFunc),
 	}
 	m.players[guildID] = gp
 	return gp
@@ -226,6 +230,7 @@ func (gp *GuildPlayer) Leave() error {
 	trackCancel := gp.trackCancel
 	gp.trackCancel = nil
 	gp.playbackGen++
+	resolutionCancels := gp.invalidateResolutionsLocked()
 	conn := gp.voiceConn
 	gp.voiceConn = nil
 	gp.voiceChannelID = ""
@@ -234,6 +239,9 @@ func (gp *GuildPlayer) Leave() error {
 	gp.status = StatusIdle
 	gp.mu.Unlock()
 
+	for _, cancel := range resolutionCancels {
+		cancel()
+	}
 	if trackCancel != nil {
 		trackCancel()
 	}
@@ -251,18 +259,47 @@ func (gp *GuildPlayer) Leave() error {
 
 func (gp *GuildPlayer) Enqueue(track *Track) error {
 	gp.mu.Lock()
-	if len(gp.queue) >= gp.cfg.MaxQueueSize {
-		gp.mu.Unlock()
-		return fmt.Errorf("queue is full (max %d)", gp.cfg.MaxQueueSize)
-	}
-	gp.queue = append(gp.queue, track)
+	err := gp.enqueueLocked(track)
 	gp.mu.Unlock()
+	if err != nil {
+		return err
+	}
 	gp.notify()
 
 	select {
 	case gp.playSignal <- struct{}{}:
 	default:
 	}
+	return nil
+}
+
+// EnqueueResolved enqueues a resolver result only if Stop or Leave has not
+// invalidated the resolution since it began.
+func (gp *GuildPlayer) EnqueueResolved(track *Track, generation uint64) error {
+	gp.mu.Lock()
+	if generation != gp.resolutionGen {
+		gp.mu.Unlock()
+		return context.Canceled
+	}
+	err := gp.enqueueLocked(track)
+	gp.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	gp.notify()
+
+	select {
+	case gp.playSignal <- struct{}{}:
+	default:
+	}
+	return nil
+}
+
+func (gp *GuildPlayer) enqueueLocked(track *Track) error {
+	if len(gp.queue) >= gp.cfg.MaxQueueSize {
+		return fmt.Errorf("queue is full (max %d)", gp.cfg.MaxQueueSize)
+	}
+	gp.queue = append(gp.queue, track)
 	return nil
 }
 
@@ -369,9 +406,13 @@ func (gp *GuildPlayer) Stop() error {
 	trackCancel := gp.trackCancel
 	gp.trackCancel = nil
 	gp.playbackGen++
+	resolutionCancels := gp.invalidateResolutionsLocked()
 	gp.queue = nil
 	gp.loop = LoopOff
 	gp.mu.Unlock()
+	for _, cancel := range resolutionCancels {
+		cancel()
+	}
 	if trackCancel != nil {
 		trackCancel()
 	}
@@ -380,6 +421,53 @@ func (gp *GuildPlayer) Stop() error {
 	}
 	gp.notify()
 	return nil
+}
+
+// ResolutionGeneration identifies searches submitted since the most recent
+// Stop or Leave. Workers discard a job when its generation is no longer current.
+func (gp *GuildPlayer) ResolutionGeneration() uint64 {
+	gp.mu.Lock()
+	defer gp.mu.Unlock()
+	return gp.resolutionGen
+}
+
+// BeginResolution registers cancellable work for generation. The returned
+// finish function must be called when resolution ends.
+func (gp *GuildPlayer) BeginResolution(parent context.Context, generation uint64) (context.Context, func(), bool) {
+	gp.mu.Lock()
+	if generation != gp.resolutionGen {
+		gp.mu.Unlock()
+		return nil, nil, false
+	}
+	ctx, cancel := context.WithCancel(parent)
+	gp.resolutionSeq++
+	id := gp.resolutionSeq
+	if gp.resolutionCancel == nil {
+		gp.resolutionCancel = make(map[uint64]context.CancelFunc)
+	}
+	gp.resolutionCancel[id] = cancel
+	gp.mu.Unlock()
+
+	var once sync.Once
+	finish := func() {
+		once.Do(func() {
+			cancel()
+			gp.mu.Lock()
+			delete(gp.resolutionCancel, id)
+			gp.mu.Unlock()
+		})
+	}
+	return ctx, finish, true
+}
+
+func (gp *GuildPlayer) invalidateResolutionsLocked() []context.CancelFunc {
+	gp.resolutionGen++
+	cancels := make([]context.CancelFunc, 0, len(gp.resolutionCancel))
+	for _, cancel := range gp.resolutionCancel {
+		cancels = append(cancels, cancel)
+	}
+	gp.resolutionCancel = make(map[uint64]context.CancelFunc)
+	return cancels
 }
 
 // SetVolume changes playback volume. A currently playing track's encoder
