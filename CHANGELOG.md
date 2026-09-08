@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.2.0](https://github.com/krezh/noctune/compare/0.1.5...0.2.0) (2026-09-08)
+
+
+### ⚠ BREAKING CHANGES
+
+* **deps:** Update module golang.org/x/oauth2 (v0.36.0 ➔ v0.37.0) ([#10](https://github.com/krezh/noctune/issues/10))
+
+### Features
+
+* **deps:** Update module golang.org/x/oauth2 (v0.36.0 ➔ v0.37.0) ([#10](https://github.com/krezh/noctune/issues/10)) ([dcf34d3](https://github.com/krezh/noctune/commit/dcf34d33db845ebe7834b6ba19fd53b5e9412b91))
+
 ## [0.1.5](https://github.com/krezh/noctune/compare/0.1.4...0.1.5) (2026-08-25)
 
 
