@@ -271,8 +271,9 @@ readFrames:
 		_ = h.cmd.Process.Kill()
 	}
 	sourceErr := h.stream.Close()
-	waitErr := h.cmd.Wait()
+	// Drain stderr before Wait, which closes the pipe on process exit.
 	<-h.stderrDone
+	waitErr := h.cmd.Wait()
 	_ = os.Remove(h.zmqSocket)
 	close(h.cleanupDone)
 
