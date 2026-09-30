@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -150,6 +151,7 @@ func TestTemplatesParseAndExecute(t *testing.T) {
 		Album:      "Some Album",
 		ArtworkURL: "https://example.com/art.png",
 		Duration:   3 * time.Minute,
+		SourceURL:  "https://example.com/track",
 		Source:     player.SourceSpotify,
 	}
 
@@ -216,5 +218,13 @@ func TestTemplatesParseAndExecute(t *testing.T) {
 		if err := tmpl.ExecuteTemplate(io.Discard, tc.name, tc.data); err != nil {
 			t.Errorf("execute %s: %v", tc.name, err)
 		}
+	}
+
+	var queueBuf strings.Builder
+	if err := tmpl.ExecuteTemplate(&queueBuf, "panel-queue", panel); err != nil {
+		t.Fatalf("render panel-queue: %v", err)
+	}
+	if !strings.Contains(queueBuf.String(), `href="https://example.com/track"`) {
+		t.Errorf("panel-queue output missing song link, got: %s", queueBuf.String())
 	}
 }

@@ -371,3 +371,25 @@ func TestManagerCloseRejectsPendingJoin(t *testing.T) {
 		t.Fatalf("rejected connection closed %d times, want 1", got)
 	}
 }
+
+func TestTrackURL(t *testing.T) {
+	var nilTrack *Track
+	if got := nilTrack.URL(); got != "" {
+		t.Errorf("nilTrack.URL() = %q, want empty", got)
+	}
+
+	sourceOnly := &Track{SourceURL: "https://spotify.com/track/1"}
+	if got := sourceOnly.URL(); got != "https://spotify.com/track/1" {
+		t.Errorf("sourceOnly.URL() = %q, want source url", got)
+	}
+
+	watchOnly := &Track{WatchURL: "https://youtube.com/watch?v=1"}
+	if got := watchOnly.URL(); got != "https://youtube.com/watch?v=1" {
+		t.Errorf("watchOnly.URL() = %q, want watch url", got)
+	}
+
+	both := &Track{SourceURL: "https://spotify.com/track/1", WatchURL: "https://youtube.com/watch?v=1"}
+	if got := both.URL(); got != "https://spotify.com/track/1" {
+		t.Errorf("both.URL() = %q, want SourceURL precedence", got)
+	}
+}

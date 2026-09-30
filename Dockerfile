@@ -9,10 +9,11 @@ COPY . .
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/noctune ./cmd/noctune
 
 FROM alpine:latest AS runtime
+COPY requirements.txt .
 RUN apk add --no-cache ffmpeg python3 py3-pip ca-certificates && \
-    pip3 install --no-cache-dir --break-system-packages yt-dlp && \
+    pip3 install --no-cache-dir --break-system-packages -r requirements.txt && \
+    rm requirements.txt && \
     addgroup -S noctune && adduser -S noctune -G noctune
-
 COPY --from=build /out/noctune /usr/local/bin/noctune
 
 USER noctune

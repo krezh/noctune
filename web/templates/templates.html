@@ -9,6 +9,7 @@
 {{define "icon-remove"}}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="5" y1="5" x2="19" y2="19"/><line x1="19" y1="5" x2="5" y2="19"/></svg>{{end}}
 {{define "icon-volume"}}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="4,9 8,9 12,5 12,19 8,15 4,15" fill="currentColor" stroke="none"/><path d="M16 8a5 5 0 010 8"/></svg>{{end}}
 {{define "icon-grip"}}<svg viewBox="0 0 24 24" fill="currentColor"><circle cx="9" cy="6" r="1.5"/><circle cx="15" cy="6" r="1.5"/><circle cx="9" cy="12" r="1.5"/><circle cx="15" cy="12" r="1.5"/><circle cx="9" cy="18" r="1.5"/><circle cx="15" cy="18" r="1.5"/></svg>{{end}}
+{{define "icon-link"}}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>{{end}}
 
 {{/*
   requested-by takes a *player.Track and renders who queued it — avatar
@@ -211,7 +212,7 @@
             {{.State.Status}} · <span id="status-volume">{{.State.Volume}}%</span><span id="status-loop">{{if ne .State.Loop "off"}} · loop {{.State.Loop}}{{end}}</span>
           {{end}}
         </div>
-        <div class="title">{{.State.Current.Title}}</div>
+        <div class="title">{{if .State.Current.URL}}<a draggable="false" href="{{.State.Current.URL}}" target="_blank" rel="noopener noreferrer">{{.State.Current.Title}}</a>{{else}}{{.State.Current.Title}}{{end}}</div>
         <div class="artist">{{.State.Current.Artist}}{{template "requested-by" .State.Current}}</div>
       </div>
     {{else}}
@@ -466,9 +467,12 @@
         <span class="queue-thumb-placeholder"></span>
       {{end}}
       <span class="meta">
-        <div class="title">{{$t.Title}}</div>
+        <div class="title">{{if $t.URL}}<a draggable="false" href="{{$t.URL}}" target="_blank" rel="noopener noreferrer">{{$t.Title}}</a>{{else}}{{$t.Title}}{{end}}</div>
         <div class="artist">{{$t.Artist}}{{template "requested-by" $t}}</div>
       </span>
+      {{if $t.URL}}
+      <a draggable="false" href="{{$t.URL}}" target="_blank" rel="noopener noreferrer" class="icon-btn small" aria-label="Open track link">{{template "icon-link"}}</a>
+      {{end}}
       <form hx-post="/g/{{$.GuildID}}/queue/play">
         <input type="hidden" name="id" value="{{$t.ID}}">
         <button type="submit" class="icon-btn small" aria-label="Play now">{{template "icon-play"}}</button>
@@ -581,9 +585,12 @@
           <span class="queue-thumb-placeholder"></span>
         {{end}}
         <span class="meta">
-          <div class="title">{{$t.Title}}</div>
+          <div class="title">{{if $t.URL}}<a draggable="false" href="{{$t.URL}}" target="_blank" rel="noopener noreferrer">{{$t.Title}}</a>{{else}}{{$t.Title}}{{end}}</div>
           <div class="artist">{{$t.Artist}}{{template "requested-by" $t}}</div>
         </span>
+        {{if $t.URL}}
+        <a draggable="false" href="{{$t.URL}}" target="_blank" rel="noopener noreferrer" class="icon-btn small" aria-label="Open track link">{{template "icon-link"}}</a>
+        {{end}}
         <form hx-post="/g/{{$.GuildID}}/history/requeue">
           <input type="hidden" name="id" value="{{$t.ID}}">
           <button type="submit" class="icon-btn small" aria-label="Add to queue">{{template "icon-play"}}</button>

@@ -444,6 +444,7 @@ main {
   border: 1px solid var(--border);
   background: var(--panel-2);
   color: var(--moon);
+  text-decoration: none;
   cursor: pointer;
   transition: border-color 0.15s, color 0.15s, background-color 0.15s;
 }
@@ -711,6 +712,18 @@ input[type=range]::-moz-range-thumb {
 .queue-list .title, .history-list .title { font-size: 0.85rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .queue-list .artist, .history-list .artist { color: var(--moon-dim); font-size: 0.78rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .queue-list form, .history-list form { flex: none; }
+.queue-list .title a,
+.history-list .title a,
+.now-playing .title a {
+  color: inherit;
+  text-decoration: none;
+}
+.queue-list .title a:hover,
+.history-list .title a:hover,
+.now-playing .title a:hover {
+  text-decoration: underline;
+  color: var(--amber);
+}
 
 .history-section {
   margin-top: 1rem;

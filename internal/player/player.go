@@ -80,6 +80,17 @@ func NewTrack(title, artist, album, artworkURL, watchURL, sourceURL string, dura
 	}
 }
 
+// URL returns the track's public link (SourceURL, falling back to WatchURL).
+func (t *Track) URL() string {
+	if t == nil {
+		return ""
+	}
+	if t.SourceURL != "" {
+		return t.SourceURL
+	}
+	return t.WatchURL
+}
+
 // StreamResolver opens a live, readable audio stream for a track's
 // stable watch URL. Implemented by internal/youtube, backed by a yt-dlp
 // subprocess piping its own fetch of the audio into the returned

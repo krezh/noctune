@@ -327,8 +327,8 @@ func (b *Bot) handleQueue(event *events.ApplicationCommandInteractionCreate, gui
 	e := discord.NewEmbed().WithColor(embedColor).WithTitle("Queue")
 	var sb strings.Builder
 	if st.Current != nil {
-		if st.Current.SourceURL != "" {
-			fmt.Fprintf(&sb, "**Now playing:** [%s](%s) — %s\n\n", st.Current.Title, st.Current.SourceURL, st.Current.Artist)
+		if link := st.Current.URL(); link != "" {
+			fmt.Fprintf(&sb, "**Now playing:** [%s](%s) — %s\n\n", st.Current.Title, link, st.Current.Artist)
 		} else {
 			fmt.Fprintf(&sb, "**Now playing:** %s — %s\n\n", st.Current.Title, st.Current.Artist)
 		}
@@ -344,7 +344,11 @@ func (b *Bot) handleQueue(event *events.ApplicationCommandInteractionCreate, gui
 		sb.WriteString("**Up next:**\n")
 		n := min(len(st.Queue), 10)
 		for idx, t := range st.Queue[:n] {
-			fmt.Fprintf(&sb, "%d. %s — %s\n", idx+1, t.Title, t.Artist)
+			if link := t.URL(); link != "" {
+				fmt.Fprintf(&sb, "%d. [%s](%s) — %s\n", idx+1, t.Title, link, t.Artist)
+			} else {
+				fmt.Fprintf(&sb, "%d. %s — %s\n", idx+1, t.Title, t.Artist)
+			}
 		}
 		if len(st.Queue) > n {
 			fmt.Fprintf(&sb, "…and %d more", len(st.Queue)-n)

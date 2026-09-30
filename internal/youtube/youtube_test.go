@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestOpenStreamReportsProcessFailureWithoutStderr(t *testing.T) {
@@ -25,6 +26,48 @@ func TestOpenStreamReportsProcessFailureWithoutStderr(t *testing.T) {
 	}
 	if err := stream.Close(); err == nil || !strings.Contains(err.Error(), "exit status 42") {
 		t.Fatalf("Close() error = %v, want yt-dlp exit failure", err)
+	}
+}
+
+func TestOpenStreamReportsProcessFailureWithStderrBeforeEOF(t *testing.T) {
+	dir := t.TempDir()
+	ytDlp := filepath.Join(dir, "yt-dlp")
+	if err := os.WriteFile(ytDlp, []byte("#!/bin/sh\necho 'HTTP Error 403: Forbidden' >&2\nexit 1\n"), 0o755); err != nil {
+		t.Fatalf("write fake yt-dlp: %v", err)
+	}
+
+	stream, err := New(ytDlp, "").OpenStream(context.Background(), "https://www.youtube.com/watch?v=test")
+	if err != nil {
+		t.Fatalf("OpenStream() error = %v", err)
+	}
+	buf := make([]byte, 16)
+	_, _ = stream.Read(buf)
+	if err := stream.Close(); err == nil || !strings.Contains(err.Error(), "HTTP Error 403: Forbidden") {
+		t.Fatalf("Close() error = %v, want yt-dlp stderr error message", err)
+	}
+}
+
+func TestLiveOpenStreamDownloadsAudio(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping live network test in short mode")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	client := New("yt-dlp", "")
+	stream, err := client.OpenStream(ctx, "https://www.youtube.com/watch?v=gB5aXPgZ61s")
+	if err != nil {
+		t.Fatalf("OpenStream() error = %v", err)
+	}
+	defer stream.Close()
+
+	buf := make([]byte, 8192)
+	n, err := io.ReadFull(stream, buf)
+	if err != nil {
+		t.Fatalf("ReadFull() read %d bytes, error = %v", n, err)
+	}
+	if n < len(buf) {
+		t.Fatalf("read %d bytes, want at least %d", n, len(buf))
 	}
 }
 

@@ -261,6 +261,7 @@ func (c *Client) OpenStream(ctx context.Context, watchURL string) (io.ReadCloser
 	}
 
 	cmd := exec.CommandContext(ctx, c.ytDlpPath,
+		"--extractor-args", "youtube:player_client=web_embedded,android",
 		"-f", "bestaudio/best",
 		"-o", "-",
 		"--no-playlist",
@@ -396,8 +397,8 @@ func (p *processStream) Close() error {
 		switch {
 		case closeErr != nil:
 			p.closeErr = closeErr
-		case naturalEOF && waitErr != nil && p.stderr.Len() > 0:
-			p.closeErr = fmt.Errorf("yt-dlp: %w: %s", waitErr, p.stderr.String())
+		case waitErr != nil && p.stderr.Len() > 0:
+			p.closeErr = fmt.Errorf("yt-dlp: %w: %s", waitErr, strings.TrimSpace(p.stderr.String()))
 		case naturalEOF && waitErr != nil:
 			p.closeErr = fmt.Errorf("yt-dlp: %w", waitErr)
 		}
@@ -414,6 +415,7 @@ func (c *Client) run(ctx context.Context, target string) (*Result, error) {
 		"--no-playlist",
 		"--no-warnings",
 		"--skip-download",
+		"--extractor-args", "youtube:player_client=web_embedded,android",
 		target,
 	)
 	var stdout, stderr bytes.Buffer
