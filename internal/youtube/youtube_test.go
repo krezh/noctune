@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 )
 
 func TestOpenStreamReportsProcessFailureWithoutStderr(t *testing.T) {
@@ -47,27 +46,25 @@ func TestOpenStreamReportsProcessFailureWithStderrBeforeEOF(t *testing.T) {
 	}
 }
 
-func TestLiveOpenStreamDownloadsAudio(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping live network test in short mode")
+func TestOpenStreamPassesExtractorArgs(t *testing.T) {
+	dir := t.TempDir()
+	ytDlp := filepath.Join(dir, "yt-dlp")
+	if err := os.WriteFile(ytDlp, []byte("#!/bin/sh\necho \"$*\"\n"), 0o755); err != nil {
+		t.Fatalf("write fake yt-dlp: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
 
-	client := New("yt-dlp", "")
-	stream, err := client.OpenStream(ctx, "https://www.youtube.com/watch?v=gB5aXPgZ61s")
+	stream, err := New(ytDlp, "").OpenStream(context.Background(), "https://www.youtube.com/watch?v=test")
 	if err != nil {
 		t.Fatalf("OpenStream() error = %v", err)
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 
-	buf := make([]byte, 8192)
-	n, err := io.ReadFull(stream, buf)
+	out, err := io.ReadAll(stream)
 	if err != nil {
-		t.Fatalf("ReadFull() read %d bytes, error = %v", n, err)
+		t.Fatalf("read stream: %v", err)
 	}
-	if n < len(buf) {
-		t.Fatalf("read %d bytes, want at least %d", n, len(buf))
+	if !strings.Contains(string(out), "youtube:player_client=web_embedded,android") {
+		t.Errorf("OpenStream did not pass expected extractor args, got: %s", string(out))
 	}
 }
 
