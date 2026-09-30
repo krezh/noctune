@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.2.1](https://github.com/krezh/noctune/compare/0.2.0...0.2.1) (2026-09-30)
+
+
+### Features
+
+* **queue:** show track links and resolve youtube 403 stream errors ([9168583](https://github.com/krezh/noctune/commit/91685830857f057c5daa355c69e86db34379bcc6))
+
+
+### Tests
+
+* **youtube:** replace live network test with hermetic argument test ([8f45be7](https://github.com/krezh/noctune/commit/8f45be74aadc1daa85eb4d37c71465d0e67db989))
+
 ## [0.2.0](https://github.com/krezh/noctune/compare/0.1.5...0.2.0) (2026-09-08)
 
 
