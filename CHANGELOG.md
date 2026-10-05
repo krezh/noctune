@@ -6,6 +6,13 @@
 
 * **web:** derive page titles and favicon from the Discord bot profile
 
+## [0.2.2](https://github.com/krezh/noctune/compare/0.2.1...0.2.2) (2026-10-05)
+
+
+### Features
+
+* **web:** derive branding from bot profile ([db437fa](https://github.com/krezh/noctune/commit/db437fa63444e453fe6b93e5d9a1c2717b4de168))
+
 ## [0.2.1](https://github.com/krezh/noctune/compare/0.2.0...0.2.1) (2026-09-30)
 
 
