@@ -26,7 +26,7 @@
 <header class="top">
   <div class="brand">
     {{template "icon-eq" "idle"}}
-    <h1>noctune</h1>
+    <h1>{{.Bot.Name}}</h1>
   </div>
   <nav>
     {{with .Session}}
@@ -65,7 +65,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>noctune — sign in</title>
+<title>{{.Bot.Name}} — sign in</title>
+<link rel="icon" type="image/png" href="{{.Bot.Icon}}">
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
@@ -102,7 +103,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>noctune</title>
+<title>{{.Bot.Name}}</title>
+<link rel="icon" type="image/png" href="{{.Bot.Icon}}">
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
@@ -111,7 +113,7 @@
   <div class="card">
     <h2>Servers</h2>
     {{if not .Guilds}}
-      <p class="empty">noctune isn't in any servers yet. Invite it, then refresh this page.</p>
+      <p class="empty">{{.Bot.Name}} isn't in any servers yet. Invite it, then refresh this page.</p>
     {{else}}
       <ul class="guild-list">
         {{range .Guilds}}
@@ -137,7 +139,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>noctune — {{.Guild.Name}}</title>
+<title>{{.Bot.Name}} — {{.Guild.Name}}</title>
+<link rel="icon" type="image/png" href="{{.Bot.Icon}}">
 <link rel="stylesheet" href="/static/style.css">
 <script src="/static/htmx.min.js"></script>
 <script src="/static/sse.js"></script>

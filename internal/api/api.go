@@ -195,6 +195,18 @@ func formatDuration(d time.Duration) string {
 	return fmt.Sprintf("%d:%02d", m, s)
 }
 
+type BotView struct {
+	Name string
+	Icon string
+}
+
+func newBotView(user discord.User) BotView {
+	return BotView{
+		Name: user.EffectiveName(),
+		Icon: user.EffectiveAvatarURL(discord.WithFormat(discord.FileFormatPNG), discord.WithSize(64)),
+	}
+}
+
 type PanelData struct {
 	GuildID  string
 	Channels []ChannelView
@@ -213,6 +225,7 @@ type Server struct {
 	client   *bot.Client
 	players  *player.Manager
 	resolver *resolve.Resolver
+	bot      BotView
 	tmpl     *template.Template
 
 	sessions *sessionStore
@@ -228,6 +241,15 @@ type Server struct {
 }
 
 func New(cfg *config.Config, client *bot.Client, players *player.Manager, resolver *resolve.Resolver) (*Server, error) {
+	self, ok := client.Caches.SelfUser()
+	if !ok {
+		current, err := client.Rest.GetCurrentUser("")
+		if err != nil {
+			return nil, fmt.Errorf("get bot identity: %w", err)
+		}
+		self = *current
+	}
+
 	tmpl, err := template.New("").Funcs(template.FuncMap{
 		"inc": func(i int) int { return i + 1 },
 	}).ParseFS(web.Templates, "templates/*.html")
@@ -236,7 +258,7 @@ func New(cfg *config.Config, client *bot.Client, players *player.Manager, resolv
 	}
 	searchCtx, searchCancel := context.WithCancel(context.Background())
 	srv := &Server{
-		cfg: cfg, client: client, players: players, resolver: resolver, tmpl: tmpl,
+		cfg: cfg, client: client, players: players, resolver: resolver, tmpl: tmpl, bot: newBotView(self.User),
 		sessions:     newSessionStore(cfg.SessionSecret),
 		avatars:      newAvatarCache(),
 		searchCh:     make(map[string]chan searchJob),
@@ -507,6 +529,7 @@ func (srv *Server) requireVoicePresence(next http.HandlerFunc) http.HandlerFunc 
 }
 
 type loginPageData struct {
+	Bot            BotView
 	Error          string
 	DiscordEnabled bool
 	TokenEnabled   bool
@@ -515,6 +538,7 @@ type loginPageData struct {
 
 func (srv *Server) loginPageData(r *http.Request, errMsg string) loginPageData {
 	return loginPageData{
+		Bot:            srv.bot,
 		Error:          errMsg,
 		DiscordEnabled: srv.cfg.DiscordOAuthEnabled(),
 		TokenEnabled:   srv.cfg.WebAuthToken != "",
@@ -597,9 +621,10 @@ func (srv *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	srv.render(w, "page:index", struct {
+		Bot     BotView
 		Guilds  []GuildView
 		Session *SessionView
-	}{Guilds: guilds, Session: srv.sessionView(r)})
+	}{Bot: srv.bot, Guilds: guilds, Session: srv.sessionView(r)})
 }
 
 // showChannelPicker reports whether the join control should be the old
@@ -624,11 +649,12 @@ func (srv *Server) handleGuildPage(w http.ResponseWriter, r *http.Request) {
 	}
 	pd := srv.panelData(guildID, g, showChannelPicker(sessionFromContext(r.Context())))
 	srv.render(w, "page:guild", struct {
+		Bot     BotView
 		Guild   GuildView
 		Guilds  []GuildView
 		Panel   PanelData
 		Session *SessionView
-	}{Guild: guildView(g), Guilds: srv.visibleGuilds(r), Panel: pd, Session: srv.sessionView(r)})
+	}{Bot: srv.bot, Guild: guildView(g), Guilds: srv.visibleGuilds(r), Panel: pd, Session: srv.sessionView(r)})
 }
 
 func (srv *Server) handleEvents(w http.ResponseWriter, r *http.Request) {

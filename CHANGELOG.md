@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Features
+
+* **web:** derive page titles and favicon from the Discord bot profile
+
 ## [0.2.1](https://github.com/krezh/noctune/compare/0.2.0...0.2.1) (2026-09-30)
 
 

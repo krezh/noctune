@@ -10,6 +10,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/disgoorg/disgo/discord"
+	"github.com/disgoorg/snowflake/v2"
+
 	"github.com/krezh/noctune/internal/player"
 	"github.com/krezh/noctune/web"
 )
@@ -101,6 +104,25 @@ func TestGuildInitials(t *testing.T) {
 	}
 }
 
+func TestNewBotView(t *testing.T) {
+	name := "Night Radio"
+	avatar := "abc123"
+	view := newBotView(discord.User{
+		ID:         snowflake.ID(123456789012345678),
+		Username:   "nightbot",
+		GlobalName: &name,
+		Avatar:     &avatar,
+	})
+
+	if view.Name != name {
+		t.Errorf("Name = %q, want %q", view.Name, name)
+	}
+	const wantIcon = "https://cdn.discordapp.com/avatars/123456789012345678/abc123.png?size=64"
+	if view.Icon != wantIcon {
+		t.Errorf("Icon = %q, want %q", view.Icon, wantIcon)
+	}
+}
+
 func TestPlayerSectionChanged(t *testing.T) {
 	trackA := &player.Track{ID: "a"}
 	trackB := &player.Track{ID: "b"}
@@ -171,28 +193,32 @@ func TestTemplatesParseAndExecute(t *testing.T) {
 		},
 	}
 	loggedInSession := &SessionView{Username: "someone", AvatarURL: "https://example.com/a.png"}
+	bot := BotView{Name: "Night Radio", Icon: "https://example.com/bot.png"}
 
 	cases := []struct {
 		name string
 		data any
 	}{
-		{"page:login", loginPageData{Error: "bad token"}},
-		{"page:login", loginPageData{DiscordEnabled: true, TokenEnabled: true}},
-		{"page:login", loginPageData{}},
+		{"page:login", loginPageData{Bot: bot, Error: "bad token"}},
+		{"page:login", loginPageData{Bot: bot, DiscordEnabled: true, TokenEnabled: true}},
+		{"page:login", loginPageData{Bot: bot}},
 		{"page:index", struct {
+			Bot     BotView
 			Guilds  []GuildView
 			Session *SessionView
-		}{Guilds: []GuildView{{ID: "1", Name: "Test Guild", Icon: "https://example.com/i.png"}}, Session: loggedInSession}},
+		}{Bot: bot, Guilds: []GuildView{{ID: "1", Name: "Test Guild", Icon: "https://example.com/i.png"}}, Session: loggedInSession}},
 		{"page:index", struct {
+			Bot     BotView
 			Guilds  []GuildView
 			Session *SessionView
-		}{}},
+		}{Bot: bot}},
 		{"page:guild", struct {
+			Bot     BotView
 			Guild   GuildView
 			Guilds  []GuildView
 			Panel   PanelData
 			Session *SessionView
-		}{Guild: GuildView{ID: "123", Name: "Test Guild"}, Guilds: []GuildView{{ID: "123", Name: "Test Guild"}}, Panel: panel, Session: loggedInSession}},
+		}{Bot: bot, Guild: GuildView{ID: "123", Name: "Test Guild"}, Guilds: []GuildView{{ID: "123", Name: "Test Guild"}}, Panel: panel, Session: loggedInSession}},
 		{"panel-shell", panel},
 		{"panel-inner", panel},
 		{"panel-inner", PanelData{GuildID: "123", State: player.State{Status: player.StatusIdle, Loop: player.LoopOff}}}, // empty queue, no current track
@@ -218,6 +244,24 @@ func TestTemplatesParseAndExecute(t *testing.T) {
 		if err := tmpl.ExecuteTemplate(io.Discard, tc.name, tc.data); err != nil {
 			t.Errorf("execute %s: %v", tc.name, err)
 		}
+	}
+
+	var pageBuf strings.Builder
+	if err := tmpl.ExecuteTemplate(&pageBuf, "page:guild", struct {
+		Bot     BotView
+		Guild   GuildView
+		Guilds  []GuildView
+		Panel   PanelData
+		Session *SessionView
+	}{Bot: bot, Guild: GuildView{ID: "123", Name: "Test Guild"}, Panel: panel}); err != nil {
+		t.Fatalf("render page:guild: %v", err)
+	}
+	pageHTML := pageBuf.String()
+	if !strings.Contains(pageHTML, "<title>Night Radio — Test Guild</title>") {
+		t.Errorf("page title does not use bot name: %s", pageHTML)
+	}
+	if !strings.Contains(pageHTML, `<link rel="icon" type="image/png" href="https://example.com/bot.png">`) {
+		t.Errorf("favicon does not use bot icon: %s", pageHTML)
 	}
 
 	var queueBuf strings.Builder
