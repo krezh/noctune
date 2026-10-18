@@ -123,6 +123,32 @@ func TestNewBotView(t *testing.T) {
 	}
 }
 
+func TestDefaultGuild(t *testing.T) {
+	guilds := []GuildView{
+		{ID: "first"},
+		{ID: "live", Live: true},
+		{ID: "user"},
+	}
+	for _, tc := range []struct {
+		name        string
+		userGuildID string
+		want        string
+	}{
+		{name: "user voice guild takes precedence", userGuildID: "user", want: "user"},
+		{name: "live bot guild is fallback", want: "live"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := defaultGuild(guilds, tc.userGuildID).ID; got != tc.want {
+				t.Fatalf("defaultGuild() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+
+	if got := defaultGuild([]GuildView{{ID: "first"}, {ID: "second"}}, "").ID; got != "first" {
+		t.Fatalf("defaultGuild() without preferred or live guild = %q, want first", got)
+	}
+}
+
 func TestPlayerSectionChanged(t *testing.T) {
 	trackA := &player.Track{ID: "a"}
 	trackB := &player.Track{ID: "b"}

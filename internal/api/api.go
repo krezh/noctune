@@ -602,6 +602,19 @@ func (srv *Server) visibleGuilds(r *http.Request) []GuildView {
 	return guilds
 }
 
+func defaultGuild(guilds []GuildView, userGuildID string) GuildView {
+	target := guilds[0]
+	for _, g := range guilds {
+		if g.ID == userGuildID {
+			return g
+		}
+		if !target.Live && g.Live {
+			target = g
+		}
+	}
+	return target
+}
+
 // handleIndex is only ever actually seen when a session has zero visible
 // guilds (the bot isn't in any server yet, or an untrusted OAuth session
 // isn't in voice anywhere it's allowed) — the sidebar on the guild page
@@ -610,13 +623,15 @@ func (srv *Server) visibleGuilds(r *http.Request) []GuildView {
 func (srv *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	guilds := srv.visibleGuilds(r)
 	if len(guilds) > 0 {
-		target := guilds[0]
+		sess := sessionFromContext(r.Context())
+		userGuildID := ""
 		for _, g := range guilds {
-			if g.Live {
-				target = g
+			if _, ok := srv.userVoiceChannel(sess, g.ID); ok {
+				userGuildID = g.ID
 				break
 			}
 		}
+		target := defaultGuild(guilds, userGuildID)
 		http.Redirect(w, r, "/g/"+target.ID, http.StatusSeeOther)
 		return
 	}
