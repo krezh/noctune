@@ -6,6 +6,7 @@ package player
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -179,6 +180,7 @@ type Manager struct {
 	client   *bot.Client
 	resolver StreamResolver
 	cfg      *config.Config
+	closed   bool
 }
 
 func NewManager(client *bot.Client, resolver StreamResolver, cfg *config.Config) *Manager {
@@ -190,12 +192,17 @@ func NewManager(client *bot.Client, resolver StreamResolver, cfg *config.Config)
 	}
 }
 
-// Get returns the player for a guild, creating it on first use.
-func (m *Manager) Get(guildID string) *GuildPlayer {
+var errManagerClosed = errors.New("player manager is closed")
+
+// Get returns the player for a guild, creating it unless the manager is closed.
+func (m *Manager) Get(guildID string) (*GuildPlayer, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if gp, ok := m.players[guildID]; ok {
-		return gp
+		return gp, nil
+	}
+	if m.closed {
+		return nil, errManagerClosed
 	}
 	gp := &GuildPlayer{
 		GuildID: guildID,
@@ -214,26 +221,29 @@ func (m *Manager) Get(guildID string) *GuildPlayer {
 		resolutionCancel: make(map[uint64]context.CancelFunc),
 	}
 	m.players[guildID] = gp
-	return gp
-}
-
-func (m *Manager) All() []*GuildPlayer {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	out := make([]*GuildPlayer, 0, len(m.players))
-	for _, gp := range m.players {
-		out = append(out, gp)
-	}
-	return out
+	return gp, nil
 }
 
 func (m *Manager) Close(ctx context.Context) error {
-	for _, gp := range m.All() {
+	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+		return nil
+	}
+	m.closed = true
+	players := make([]*GuildPlayer, 0, len(m.players))
+	for _, gp := range m.players {
+		players = append(players, gp)
+	}
+	m.mu.Unlock()
+
+	errs := make([]error, 0, len(players))
+	for _, gp := range players {
 		if err := gp.close(ctx); err != nil {
-			return fmt.Errorf("close guild %s player: %w", gp.GuildID, err)
+			errs = append(errs, fmt.Errorf("close guild %s player: %w", gp.GuildID, err))
 		}
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 func (gp *GuildPlayer) Join(ctx context.Context, channelID string) error {
@@ -835,7 +845,7 @@ func (gp *GuildPlayer) playbackLoop() {
 		volume := gp.volume
 		gp.mu.Unlock()
 
-		handle, err := audio.Play(stream, audio.Options{Volume: volume})
+		handle, err := audio.Play(stream, audio.Options{Volume: volume, FFmpegPath: gp.cfg.FFmpegPath})
 		if err != nil {
 			trackCancel()
 			log.Printf("noctune: play %q: %v", track.Title, err)

@@ -253,6 +253,9 @@ func TestManagerCloseStopsPlayers(t *testing.T) {
 	if err := gp.Enqueue(&Track{ID: "late"}); err == nil {
 		t.Fatal("Enqueue succeeded after manager shutdown")
 	}
+	if _, err := manager.Get("new-guild"); err == nil {
+		t.Fatal("manager created a player after shutdown")
+	}
 }
 
 func TestPauseDoesNotOverwriteNewPlaybackState(t *testing.T) {
@@ -425,6 +428,37 @@ func TestManagerCloseRejectsPendingJoin(t *testing.T) {
 	}
 	if got := conn.closed.Load(); got != 1 {
 		t.Fatalf("rejected connection closed %d times, want 1", got)
+	}
+}
+
+func TestManagerCloseContinuesAfterPlayerError(t *testing.T) {
+	newPlayer := func(id string) *GuildPlayer {
+		return &GuildPlayer{
+			GuildID:          id,
+			cfg:              &config.Config{},
+			subs:             make(map[chan State]struct{}),
+			playSignal:       make(chan struct{}, 1),
+			stopLoopCh:       make(chan struct{}),
+			loopDone:         make(chan struct{}),
+			resolutionCancel: make(map[uint64]context.CancelFunc),
+		}
+	}
+	blocked := newPlayer("blocked")
+	available := newPlayer("available")
+	blocked.voiceMu.Lock()
+	defer blocked.voiceMu.Unlock()
+	manager := &Manager{players: map[string]*GuildPlayer{
+		blocked.GuildID:   blocked,
+		available.GuildID: available,
+	}}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if err := manager.Close(ctx); err == nil {
+		t.Fatal("Manager.Close() succeeded despite a blocked player")
+	}
+	if !blocked.closed || !available.closed {
+		t.Fatalf("players closed = blocked:%t available:%t, want both true", blocked.closed, available.closed)
 	}
 }
 
