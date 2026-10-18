@@ -43,6 +43,15 @@ type Bot struct {
 	watchCancel   context.CancelFunc
 	watchWG       sync.WaitGroup
 	closed        bool
+
+	stateMu         sync.Mutex
+	activeTracks    map[string]*player.Track
+	presenceGuildID string
+	presenceSignal  chan struct{}
+
+	statusMu      sync.Mutex
+	pendingStatus map[string]string
+	statusSignal  chan struct{}
 }
 
 // NewClient creates the underlying disgo bot.Client with the intents and
@@ -70,18 +79,25 @@ func NewClient(cfg *config.Config) (*bot.Client, error) {
 func New(cfg *config.Config, client *bot.Client, players *player.Manager, resolver *resolve.Resolver) *Bot {
 	watchCtx, watchCancel := context.WithCancel(context.Background())
 	b := &Bot{
-		Client:        client,
-		players:       players,
-		resolver:      resolver,
-		cfg:           cfg,
-		watchedGuilds: make(map[string]struct{}),
-		watchCtx:      watchCtx,
-		watchCancel:   watchCancel,
+		Client:         client,
+		players:        players,
+		resolver:       resolver,
+		cfg:            cfg,
+		watchedGuilds:  make(map[string]struct{}),
+		watchCtx:       watchCtx,
+		watchCancel:    watchCancel,
+		activeTracks:   make(map[string]*player.Track),
+		presenceSignal: make(chan struct{}, 1),
+		pendingStatus:  make(map[string]string),
+		statusSignal:   make(chan struct{}, 1),
 	}
 	client.EventManager.AddEventListeners(&events.ListenerAdapter{
 		OnReady:                         b.onReady,
 		OnApplicationCommandInteraction: b.onInteraction,
 	})
+	b.watchWG.Add(2)
+	go b.runPresence()
+	go b.runVoiceStatuses()
 	return b
 }
 
@@ -171,6 +187,32 @@ func (b *Bot) onInteraction(event *events.ApplicationCommandInteractionCreate) {
 		b.handleLoop(event, guildID, data)
 	}
 }
+func (b *Bot) interactionPlayer(event *events.ApplicationCommandInteractionCreate, guildID string) (*player.GuildPlayer, bool) {
+	gp, err := b.players.Get(guildID)
+	if err != nil {
+		b.reply(event, "noctune is shutting down.")
+		return nil, false
+	}
+	return gp, true
+}
+
+func (b *Bot) controlPlayer(event *events.ApplicationCommandInteractionCreate, guildID string) (*player.GuildPlayer, bool) {
+	gp, ok := b.interactionPlayer(event, guildID)
+	if !ok {
+		return nil, false
+	}
+	botChannelID := gp.Snapshot().VoiceChannelID
+	if botChannelID == "" {
+		b.reply(event, "noctune isn't connected to a voice channel here.")
+		return nil, false
+	}
+	vs, ok := b.Client.Caches.VoiceState(*event.GuildID(), event.User().ID)
+	if !ok || vs.ChannelID == nil || vs.ChannelID.String() != botChannelID {
+		b.reply(event, "Join the voice channel noctune is in to control playback.")
+		return nil, false
+	}
+	return gp, true
+}
 
 func (b *Bot) handlePlay(event *events.ApplicationCommandInteractionCreate, guildID string, data discord.SlashCommandInteractionData) {
 	query := data.String("query")
@@ -187,7 +229,15 @@ func (b *Bot) handlePlay(event *events.ApplicationCommandInteractionCreate, guil
 	}
 
 	channelID := vs.ChannelID.String()
-	gp := b.players.Get(guildID)
+	gp, err := b.players.Get(guildID)
+	if err != nil {
+		b.followup(event, "noctune is shutting down.")
+		return
+	}
+	if botChannelID := gp.Snapshot().VoiceChannelID; botChannelID != "" && botChannelID != channelID {
+		b.followup(event, "Join the voice channel noctune is in to queue tracks.")
+		return
+	}
 
 	// Run blocking work (voice join + resolve) off the event-dispatch goroutine.
 	// conn.Open waits for gateway events (voice state update, voice server
@@ -289,41 +339,65 @@ func (b *Bot) webGUILink(guildID string) string {
 }
 
 func (b *Bot) handleSkip(event *events.ApplicationCommandInteractionCreate, guildID string) {
+	gp, ok := b.controlPlayer(event, guildID)
+	if !ok {
+		return
+	}
 	msg := "Skipped."
-	if err := b.players.Get(guildID).Skip(); err != nil {
+	if err := gp.Skip(); err != nil {
 		msg = err.Error()
 	}
 	b.reply(event, msg)
 }
 
 func (b *Bot) handlePause(event *events.ApplicationCommandInteractionCreate, guildID string) {
+	gp, ok := b.controlPlayer(event, guildID)
+	if !ok {
+		return
+	}
 	msg := "Paused."
-	if err := b.players.Get(guildID).Pause(); err != nil {
+	if err := gp.Pause(); err != nil {
 		msg = err.Error()
 	}
 	b.reply(event, msg)
 }
 
 func (b *Bot) handleResume(event *events.ApplicationCommandInteractionCreate, guildID string) {
+	gp, ok := b.controlPlayer(event, guildID)
+	if !ok {
+		return
+	}
 	msg := "Resumed."
-	if err := b.players.Get(guildID).Resume(); err != nil {
+	if err := gp.Resume(); err != nil {
 		msg = err.Error()
 	}
 	b.reply(event, msg)
 }
 
 func (b *Bot) handleStop(event *events.ApplicationCommandInteractionCreate, guildID string) {
-	_ = b.players.Get(guildID).Stop()
+	gp, ok := b.controlPlayer(event, guildID)
+	if !ok {
+		return
+	}
+	_ = gp.Stop()
 	b.reply(event, "Stopped and cleared the queue.")
 }
 
 func (b *Bot) handleLeave(event *events.ApplicationCommandInteractionCreate, guildID string) {
-	_ = b.players.Get(guildID).Leave()
+	gp, ok := b.controlPlayer(event, guildID)
+	if !ok {
+		return
+	}
+	_ = gp.Leave()
 	b.reply(event, "Left the voice channel.")
 }
 
 func (b *Bot) handleQueue(event *events.ApplicationCommandInteractionCreate, guildID string) {
-	st := b.players.Get(guildID).Snapshot()
+	gp, ok := b.interactionPlayer(event, guildID)
+	if !ok {
+		return
+	}
+	st := gp.Snapshot()
 	e := discord.NewEmbed().WithColor(embedColor).WithTitle("Queue")
 	var sb strings.Builder
 	if st.Current != nil {
@@ -358,7 +432,11 @@ func (b *Bot) handleQueue(event *events.ApplicationCommandInteractionCreate, gui
 }
 
 func (b *Bot) handleNowPlaying(event *events.ApplicationCommandInteractionCreate, guildID string) {
-	st := b.players.Get(guildID).Snapshot()
+	gp, ok := b.interactionPlayer(event, guildID)
+	if !ok {
+		return
+	}
+	st := gp.Snapshot()
 	if st.Current == nil {
 		b.reply(event, "Nothing is playing.")
 		return
@@ -375,8 +453,12 @@ func (b *Bot) handleNowPlaying(event *events.ApplicationCommandInteractionCreate
 }
 
 func (b *Bot) handleVolume(event *events.ApplicationCommandInteractionCreate, guildID string, data discord.SlashCommandInteractionData) {
+	gp, ok := b.controlPlayer(event, guildID)
+	if !ok {
+		return
+	}
 	level := data.Int("level")
-	if err := b.players.Get(guildID).SetVolume(level); err != nil {
+	if err := gp.SetVolume(level); err != nil {
 		b.reply(event, err.Error())
 		return
 	}
@@ -384,13 +466,16 @@ func (b *Bot) handleVolume(event *events.ApplicationCommandInteractionCreate, gu
 }
 
 func (b *Bot) handleLoop(event *events.ApplicationCommandInteractionCreate, guildID string, data discord.SlashCommandInteractionData) {
+	gp, ok := b.controlPlayer(event, guildID)
+	if !ok {
+		return
+	}
 	mode := player.LoopMode(data.String("mode"))
-	b.players.Get(guildID).SetLoop(mode)
+	gp.SetLoop(mode)
 	b.reply(event, fmt.Sprintf("Loop mode: %s", mode))
 }
 
-// watchGuild subscribes to a guild's player and keeps the bot presence and
-// voice channel status in sync with playback state. No-ops if already watching.
+// watchGuild feeds guild state into the shared Discord status coordinators.
 func (b *Bot) watchGuild(guildID string) {
 	b.watchMu.Lock()
 	if b.closed {
@@ -406,36 +491,129 @@ func (b *Bot) watchGuild(guildID string) {
 	b.watchMu.Unlock()
 	defer b.watchWG.Done()
 
-	ch, cancel := b.players.Get(guildID).Subscribe()
+	gp, err := b.players.Get(guildID)
+	if err != nil {
+		return
+	}
+	ch, cancel := gp.Subscribe()
 	defer cancel()
 
-	var lastChannelID string
+	var lastChannelID, lastStatus string
+	apply := func(state player.State) {
+		channelID := state.VoiceChannelID
+		status := ""
+		if state.Status == player.StatusPlaying {
+			status = "Jammin"
+		}
+		if lastChannelID != "" && lastChannelID != channelID {
+			b.queueVoiceStatus(lastChannelID, "")
+		}
+		if channelID != "" && (channelID != lastChannelID || status != lastStatus) {
+			b.queueVoiceStatus(channelID, status)
+		}
+		lastChannelID, lastStatus = channelID, status
+		b.queuePresence(guildID, state)
+	}
+
+	apply(gp.Snapshot())
 	for {
-		var state player.State
 		select {
-		case state = <-ch:
+		case state, ok := <-ch:
+			if !ok {
+				return
+			}
+			apply(state)
 		case <-b.watchCtx.Done():
 			return
 		}
-		channelID := state.VoiceChannelID
-		if channelID == "" {
-			channelID = lastChannelID
-		} else {
-			lastChannelID = channelID
-		}
+	}
+}
 
-		if channelID != "" {
-			chID, vsStatus := channelID, ""
-			if state.Status == player.StatusPlaying {
-				vsStatus = "Jammin"
+func (b *Bot) queuePresence(guildID string, state player.State) {
+	b.stateMu.Lock()
+	if state.Status == player.StatusPlaying && state.Current != nil {
+		b.activeTracks[guildID] = state.Current
+	} else {
+		delete(b.activeTracks, guildID)
+	}
+	if _, ok := b.activeTracks[b.presenceGuildID]; !ok {
+		b.presenceGuildID = ""
+		for candidate := range b.activeTracks {
+			if b.presenceGuildID == "" || candidate < b.presenceGuildID {
+				b.presenceGuildID = candidate
 			}
-			go b.setVoiceChannelStatus(chID, vsStatus)
 		}
+	}
+	b.stateMu.Unlock()
+	select {
+	case b.presenceSignal <- struct{}{}:
+	default:
+	}
+}
 
-		if state.Status == player.StatusPlaying && state.Current != nil {
-			b.setPresence(state.Current)
-		} else if state.Status == player.StatusIdle || state.VoiceChannelID == "" {
-			b.clearPresence()
+func (b *Bot) desiredPresence() (*player.Track, string) {
+	b.stateMu.Lock()
+	defer b.stateMu.Unlock()
+	track := b.activeTracks[b.presenceGuildID]
+	if track == nil {
+		return nil, ""
+	}
+	return track, b.presenceGuildID + ":" + track.ID
+}
+
+func (b *Bot) runPresence() {
+	defer b.watchWG.Done()
+	var lastKey string
+	var initialized bool
+	for {
+		select {
+		case <-b.presenceSignal:
+			track, key := b.desiredPresence()
+			if initialized && key == lastKey {
+				continue
+			}
+			if track == nil {
+				b.clearPresence()
+			} else {
+				b.setPresence(track)
+			}
+			lastKey, initialized = key, true
+		case <-b.watchCtx.Done():
+			return
+		}
+	}
+}
+
+func (b *Bot) queueVoiceStatus(channelID, status string) {
+	b.statusMu.Lock()
+	b.pendingStatus[channelID] = status
+	b.statusMu.Unlock()
+	select {
+	case b.statusSignal <- struct{}{}:
+	default:
+	}
+}
+
+func (b *Bot) runVoiceStatuses() {
+	defer b.watchWG.Done()
+	for {
+		select {
+		case <-b.statusSignal:
+		case <-b.watchCtx.Done():
+			return
+		}
+		for {
+			var channelID, status string
+			b.statusMu.Lock()
+			for channelID, status = range b.pendingStatus {
+				delete(b.pendingStatus, channelID)
+				break
+			}
+			b.statusMu.Unlock()
+			if channelID == "" {
+				break
+			}
+			b.setVoiceChannelStatus(channelID, status)
 		}
 	}
 }
