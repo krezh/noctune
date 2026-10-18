@@ -286,6 +286,10 @@ func (gp *GuildPlayer) Join(ctx context.Context, channelID string) error {
 		closeVoiceConnection(oldConn)
 	}
 	gp.notify()
+	select {
+	case gp.playSignal <- struct{}{}:
+	default:
+	}
 	return nil
 }
 
@@ -792,12 +796,15 @@ func (gp *GuildPlayer) playbackLoop() {
 	defer close(gp.loopDone)
 	for {
 		gp.mu.Lock()
-		if len(gp.queue) == 0 {
+		voiceConn := gp.voiceConn
+		if len(gp.queue) == 0 || voiceConn == nil {
 			gp.status = StatusIdle
 			gp.current = nil
 			gp.mu.Unlock()
 			gp.notify()
-			gp.armIdleTimer()
+			if voiceConn != nil {
+				gp.armIdleTimer()
+			}
 			select {
 			case <-gp.playSignal:
 				continue
@@ -809,19 +816,12 @@ func (gp *GuildPlayer) playbackLoop() {
 		gp.queue = gp.queue[1:]
 		gp.current = track
 		gp.status = StatusLoading
-		voiceConn := gp.voiceConn
 		trackCtx, trackCancel := context.WithCancel(context.Background())
 		gp.trackCancel = trackCancel
 		playbackGen := gp.playbackGen
 		gp.mu.Unlock()
 		gp.cancelIdleTimer()
 		gp.notify()
-
-		if voiceConn == nil {
-			trackCancel()
-			log.Printf("noctune: guild %s has no voice connection, dropping %q", gp.GuildID, track.Title)
-			continue
-		}
 
 		log.Printf("noctune: opening stream for %q (%s)", track.Title, track.WatchURL)
 		stream, err := gp.resolver.OpenStream(trackCtx, track.WatchURL)

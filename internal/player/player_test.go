@@ -37,6 +37,16 @@ func (unusedResolver) OpenStream(context.Context, string) (io.ReadCloser, error)
 	panic("unexpected OpenStream call")
 }
 
+type waitingResolver struct {
+	started chan struct{}
+}
+
+func (r *waitingResolver) OpenStream(ctx context.Context, _ string) (io.ReadCloser, error) {
+	close(r.started)
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
 type blockingPlaybackHandle struct {
 	pauseStarted chan struct{}
 	pauseRelease chan struct{}
@@ -109,6 +119,52 @@ func TestStopInvalidatesResolutions(t *testing.T) {
 	}
 	if _, _, ok := gp.BeginResolution(context.Background(), generation); ok {
 		t.Fatal("BeginResolution accepted stale generation")
+	}
+}
+
+func TestPlaybackWaitsForVoiceConnection(t *testing.T) {
+	conn := &blockingVoiceConn{openStarted: make(chan struct{}), openRelease: make(chan struct{})}
+	close(conn.openRelease)
+	resolver := &waitingResolver{started: make(chan struct{})}
+	gp := &GuildPlayer{
+		GuildID:          "123",
+		createVoiceConn:  func(snowflake.ID) voiceConnection { return conn },
+		resolver:         resolver,
+		cfg:              &config.Config{IdleDisconnectSeconds: 0},
+		status:           StatusIdle,
+		subs:             make(map[chan State]struct{}),
+		playSignal:       make(chan struct{}, 1),
+		stopLoopCh:       make(chan struct{}),
+		loopDone:         make(chan struct{}),
+		resolutionCancel: make(map[uint64]context.CancelFunc),
+	}
+	gp.startOnce.Do(func() { gp.loopStarted = true })
+	gp.queue = []*Track{{ID: "queued", Title: "Queued", WatchURL: "watch"}}
+	stateCh, unsubscribe := gp.Subscribe()
+	defer unsubscribe()
+	go gp.playbackLoop()
+	defer func() {
+		_ = gp.Leave()
+		close(gp.stopLoopCh)
+		<-gp.loopDone
+	}()
+
+	select {
+	case state := <-stateCh:
+		if len(state.Queue) != 1 || state.Current != nil {
+			t.Fatalf("disconnected playback consumed queued track: %#v", state)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("playback loop did not observe disconnected queue")
+	}
+
+	if err := gp.Join(context.Background(), "456"); err != nil {
+		t.Fatalf("Join() error = %v", err)
+	}
+	select {
+	case <-resolver.started:
+	case <-time.After(time.Second):
+		t.Fatal("queued track did not start after joining")
 	}
 }
 
