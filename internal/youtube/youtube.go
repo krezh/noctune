@@ -20,25 +20,65 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 )
 
-type Client struct {
-	ytDlpPath string
-	cacheDir  string
+type Options struct {
+	YtDlpPath     string
+	CacheDir      string
+	CacheMaxBytes int64
+	MaxProcesses  int
 }
 
-// New creates a Client. cacheDir, if non-empty, is where OpenStream caches
-// each track's downloaded audio on disk, keyed by watch URL; empty
-// disables caching and every OpenStream re-fetches from YouTube.
-func New(ytDlpPath, cacheDir string) *Client {
-	if ytDlpPath == "" {
-		ytDlpPath = "yt-dlp"
+type Client struct {
+	ytDlpPath     string
+	cacheDir      string
+	cacheMaxBytes int64
+	processTokens chan struct{}
+	cacheMu       sync.Mutex
+}
+
+// New creates a client. A zero CacheMaxBytes disables disk caching.
+func New(opts Options) *Client {
+	if opts.YtDlpPath == "" {
+		opts.YtDlpPath = "yt-dlp"
 	}
-	return &Client{ytDlpPath: ytDlpPath, cacheDir: cacheDir}
+	if opts.MaxProcesses <= 0 {
+		opts.MaxProcesses = 8
+	}
+	c := &Client{
+		ytDlpPath:     opts.YtDlpPath,
+		cacheDir:      opts.CacheDir,
+		cacheMaxBytes: opts.CacheMaxBytes,
+		processTokens: make(chan struct{}, opts.MaxProcesses),
+	}
+	if c.cacheDir != "" && c.cacheMaxBytes > 0 {
+		if err := os.MkdirAll(c.cacheDir, 0o755); err != nil {
+			log.Printf("youtube: cache dir: %v", err)
+			c.cacheDir = ""
+		} else {
+			if err := c.cleanupStaleCacheTemps(); err != nil {
+				log.Printf("youtube: clean stale cache temp files: %v", err)
+			}
+			if err := c.enforceCacheLimit(); err != nil {
+				log.Printf("youtube: enforce cache limit: %v", err)
+			}
+		}
+	}
+	return c
+}
+
+func (c *Client) acquireProcess(ctx context.Context) (func(), error) {
+	select {
+	case c.processTokens <- struct{}{}:
+		return func() { <-c.processTokens }, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }
 
 type Result struct {
@@ -128,6 +168,11 @@ func IsPlaylistURL(input string) bool {
 func (c *Client) ResolvePlaylistEach(ctx context.Context, playlistURL string, fn func(*Result) error) error {
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
+	release, err := c.acquireProcess(ctx)
+	if err != nil {
+		return err
+	}
+	defer release()
 
 	cmd := exec.CommandContext(ctx, c.ytDlpPath,
 		"-j",
@@ -205,6 +250,11 @@ func (c *Client) Search(ctx context.Context, query string) (*Result, error) {
 func (c *Client) SearchList(ctx context.Context, query string, n int) ([]*Result, error) {
 	ctx, cancel := context.WithTimeout(ctx, 8*time.Second)
 	defer cancel()
+	release, err := c.acquireProcess(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 
 	cmd := exec.CommandContext(ctx, c.ytDlpPath,
 		"-j",
@@ -254,12 +304,17 @@ func (c *Client) Resolve(ctx context.Context, watchURL string) (*Result, error) 
 // fresh yt-dlp stream is tee'd to disk as it plays so the next OpenStream
 // for the same watch URL is a cache hit.
 func (c *Client) OpenStream(ctx context.Context, watchURL string) (io.ReadCloser, error) {
-	if path := c.cachePath(watchURL); path != "" {
-		if f, err := os.Open(path); err == nil {
+	path := c.cachePath(watchURL)
+	if path != "" {
+		if f, ok := c.openCached(path); ok {
 			return f, nil
 		}
 	}
 
+	release, err := c.acquireProcess(ctx)
+	if err != nil {
+		return nil, err
+	}
 	cmd := exec.CommandContext(ctx, c.ytDlpPath,
 		"--extractor-args", "youtube:player_client=web_embedded,android",
 		"-f", "bestaudio/best",
@@ -271,42 +326,132 @@ func (c *Client) OpenStream(ctx context.Context, watchURL string) (io.ReadCloser
 	)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
+		release()
 		return nil, fmt.Errorf("yt-dlp stdout pipe: %w", err)
 	}
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
-
 	if err := cmd.Start(); err != nil {
+		release()
 		return nil, fmt.Errorf("start yt-dlp stream: %w", err)
 	}
 
-	var stream io.ReadCloser = &processStream{ReadCloser: stdout, cmd: cmd, stderr: &stderr}
-	if path := c.cachePath(watchURL); path != "" {
-		stream = newCachingStream(stream, path)
+	var stream io.ReadCloser = &processStream{ReadCloser: stdout, cmd: cmd, stderr: &stderr, release: release}
+	if path != "" {
+		stream = newCachingStreamWithFinalize(stream, path, c.finalizeCache)
 	}
 	return stream, nil
 }
 
-// cachePath returns where watchURL's audio is (or would be) cached, or ""
-// if caching is disabled.
+// cachePath returns the cache location for watchURL, or "" when disabled.
 func (c *Client) cachePath(watchURL string) string {
-	if c.cacheDir == "" {
+	if c.cacheDir == "" || c.cacheMaxBytes <= 0 {
 		return ""
 	}
 	sum := sha256.Sum256([]byte(watchURL))
 	return filepath.Join(c.cacheDir, hex.EncodeToString(sum[:])+".audio")
 }
 
-// cachingStream tees a source stream to a temp file as it's read, then
-// atomically publishes it as finalPath once the source is drained to a
-// natural EOF. A stream stopped early (skip, volume-change restart, error)
-// never reaches EOF, so its partial download is discarded rather than
-// cached as if it were complete.
+func (c *Client) openCached(path string) (io.ReadCloser, bool) {
+	c.cacheMu.Lock()
+	defer c.cacheMu.Unlock()
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, false
+	}
+	now := time.Now()
+	if err := os.Chtimes(path, now, now); err != nil {
+		log.Printf("youtube: update cache access time: %v", err)
+	}
+	return f, true
+}
+
+func (c *Client) finalizeCache(tmpPath, finalPath string) error {
+	c.cacheMu.Lock()
+	defer c.cacheMu.Unlock()
+	if err := os.Rename(tmpPath, finalPath); err != nil {
+		return err
+	}
+	if err := c.enforceCacheLimitLocked(); err != nil {
+		log.Printf("youtube: enforce cache limit: %v", err)
+	}
+	return nil
+}
+
+func (c *Client) enforceCacheLimit() error {
+	c.cacheMu.Lock()
+	defer c.cacheMu.Unlock()
+	return c.enforceCacheLimitLocked()
+}
+func (c *Client) cleanupStaleCacheTemps() error {
+	entries, err := os.ReadDir(c.cacheDir)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.Contains(entry.Name(), ".audio.tmp") {
+			continue
+		}
+		if err := os.Remove(filepath.Join(c.cacheDir, entry.Name())); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
+	return nil
+}
+
+type cacheEntry struct {
+	path    string
+	size    int64
+	modTime time.Time
+}
+
+func (c *Client) enforceCacheLimitLocked() error {
+	dirEntries, err := os.ReadDir(c.cacheDir)
+	if err != nil {
+		return err
+	}
+	entries := make([]cacheEntry, 0, len(dirEntries))
+	var total int64
+	for _, entry := range dirEntries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".audio") {
+			continue
+		}
+		path := filepath.Join(c.cacheDir, entry.Name())
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if !info.Mode().IsRegular() {
+			continue
+		}
+		entries = append(entries, cacheEntry{path: path, size: info.Size(), modTime: info.ModTime()})
+		total += info.Size()
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		if entries[i].modTime.Equal(entries[j].modTime) {
+			return entries[i].path < entries[j].path
+		}
+		return entries[i].modTime.Before(entries[j].modTime)
+	})
+	for _, entry := range entries {
+		if total <= c.cacheMaxBytes {
+			break
+		}
+		if err := os.Remove(entry.path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		total -= entry.size
+	}
+	return nil
+}
+
+// cachingStream publishes only a complete, successfully downloaded stream.
 type cachingStream struct {
 	io.ReadCloser
 	mu         sync.Mutex
 	tmp        *os.File
 	finalPath  string
+	finalize   func(string, string) error
 	reachedEOF bool
 	writeErr   error
 	closed     bool
@@ -315,6 +460,10 @@ type cachingStream struct {
 }
 
 func newCachingStream(src io.ReadCloser, finalPath string) io.ReadCloser {
+	return newCachingStreamWithFinalize(src, finalPath, os.Rename)
+}
+
+func newCachingStreamWithFinalize(src io.ReadCloser, finalPath string, finalize func(string, string) error) io.ReadCloser {
 	if err := os.MkdirAll(filepath.Dir(finalPath), 0o755); err != nil {
 		log.Printf("youtube: cache dir: %v", err)
 		return src
@@ -324,7 +473,7 @@ func newCachingStream(src io.ReadCloser, finalPath string) io.ReadCloser {
 		log.Printf("youtube: cache create temp file: %v", err)
 		return src
 	}
-	return &cachingStream{ReadCloser: src, tmp: tmp, finalPath: finalPath}
+	return &cachingStream{ReadCloser: src, tmp: tmp, finalPath: finalPath, finalize: finalize}
 }
 
 func (c *cachingStream) Read(p []byte) (int, error) {
@@ -351,15 +500,15 @@ func (c *cachingStream) Close() error {
 		c.closed = true
 		c.closeErr = closeErr
 		_ = c.tmp.Close()
-		if c.reachedEOF && c.writeErr == nil {
-			if err := os.Rename(c.tmp.Name(), c.finalPath); err != nil {
+		if c.reachedEOF && c.writeErr == nil && closeErr == nil {
+			if err := c.finalize(c.tmp.Name(), c.finalPath); err == nil {
+				return
+			} else {
 				log.Printf("youtube: cache finalize: %v", err)
-				if rmErr := os.Remove(c.tmp.Name()); rmErr != nil {
-					log.Printf("youtube: remove stale cache temp file: %v", rmErr)
-				}
 			}
-		} else if rmErr := os.Remove(c.tmp.Name()); rmErr != nil {
-			log.Printf("youtube: remove cache temp file: %v", rmErr)
+		}
+		if err := os.Remove(c.tmp.Name()); err != nil && !errors.Is(err, os.ErrNotExist) {
+			log.Printf("youtube: remove cache temp file: %v", err)
 		}
 	})
 	return c.closeErr
@@ -373,6 +522,7 @@ type processStream struct {
 	io.ReadCloser
 	cmd        *exec.Cmd
 	stderr     *bytes.Buffer
+	release    func()
 	reachedEOF atomic.Bool
 	closeOnce  sync.Once
 	closeErr   error
@@ -388,6 +538,9 @@ func (p *processStream) Read(buf []byte) (int, error) {
 
 func (p *processStream) Close() error {
 	p.closeOnce.Do(func() {
+		if p.release != nil {
+			defer p.release()
+		}
 		closeErr := p.ReadCloser.Close()
 		naturalEOF := p.reachedEOF.Load()
 		if !naturalEOF {
@@ -409,6 +562,11 @@ func (p *processStream) Close() error {
 func (c *Client) run(ctx context.Context, target string) (*Result, error) {
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
+	release, err := c.acquireProcess(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 
 	cmd := exec.CommandContext(ctx, c.ytDlpPath,
 		"-j",
