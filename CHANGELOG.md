@@ -6,6 +6,13 @@
 
 * **web:** derive page titles and favicon from the Discord bot profile
 
+## [0.2.4](https://github.com/krezh/noctune/compare/0.2.3...0.2.4) (2026-10-18)
+
+
+### Bug Fixes
+
+* mobile view improvements ([7e112b9](https://github.com/krezh/noctune/commit/7e112b9834345d530f3f8faf9138f181ca814836))
+
 ## [0.2.3](https://github.com/krezh/noctune/compare/0.2.2...0.2.3) (2026-10-18)
 
 
