@@ -18,34 +18,59 @@ var discordAvatarURLPattern = regexp.MustCompile(`^https://cdn\.discordapp\.com/
 type cachedAvatar struct {
 	data        []byte
 	contentType string
+	usedAt      uint64
 }
 
-// avatarCache proxies and caches Discord CDN avatar images in memory so
-// the browser fetches a given requester's avatar from noctune once, not
-// once per queue/history row it's shown in (and not once per page load
-// on a fresh device/browser, unlike a plain hotlink to Discord's CDN).
-// Not persisted to disk — like the rest of noctune's state, a restart
-// just means the next request refetches and re-caches it.
 type avatarCache struct {
-	mu    sync.RWMutex
-	byURL map[string]cachedAvatar
+	mu       sync.Mutex
+	byURL    map[string]cachedAvatar
+	maxBytes int64
+	bytes    int64
+	tick     uint64
 }
 
-func newAvatarCache() *avatarCache {
-	return &avatarCache{byURL: make(map[string]cachedAvatar)}
+func newAvatarCache(maxBytes int64) *avatarCache {
+	return &avatarCache{byURL: make(map[string]cachedAvatar), maxBytes: maxBytes}
 }
 
 func (c *avatarCache) get(url string) (cachedAvatar, bool) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	a, ok := c.byURL[url]
-	return a, ok
+	if !ok {
+		return cachedAvatar{}, false
+	}
+	c.tick++
+	a.usedAt = c.tick
+	c.byURL[url] = a
+	return a, true
 }
 
 func (c *avatarCache) put(url string, a cachedAvatar) {
+	size := int64(len(a.data))
+	if c.maxBytes <= 0 || size > c.maxBytes {
+		return
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if old, ok := c.byURL[url]; ok {
+		c.bytes -= int64(len(old.data))
+	}
+	c.tick++
+	a.usedAt = c.tick
 	c.byURL[url] = a
+	c.bytes += size
+	for c.bytes > c.maxBytes {
+		var oldestURL string
+		var oldest cachedAvatar
+		for candidateURL, candidate := range c.byURL {
+			if oldestURL == "" || candidate.usedAt < oldest.usedAt {
+				oldestURL, oldest = candidateURL, candidate
+			}
+		}
+		delete(c.byURL, oldestURL)
+		c.bytes -= int64(len(oldest.data))
+	}
 }
 
 // avatarFetchTimeout bounds a single upstream fetch to Discord's CDN so

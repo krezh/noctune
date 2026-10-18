@@ -45,13 +45,19 @@ func (s *session) canAccessGuild(guildID string) bool {
 	return ok
 }
 
+type sessionSignal struct {
+	done      chan struct{}
+	expiresAt time.Time
+	refs      int
+}
+
 // sessionStore signs cookie payloads and tracks process-local revocations.
 // Signed sessions survive restarts; revocations intentionally do not.
 type sessionStore struct {
 	key     []byte
 	mu      sync.Mutex
 	revoked map[string]time.Time
-	signals map[string]chan struct{}
+	signals map[string]*sessionSignal
 }
 
 // newSessionStore builds the signer from cfg.SessionSecret. Left unset, it
@@ -68,7 +74,7 @@ func newSessionStore(secret string) *sessionStore {
 	return &sessionStore{
 		key:     key,
 		revoked: make(map[string]time.Time),
-		signals: make(map[string]chan struct{}),
+		signals: make(map[string]*sessionSignal),
 	}
 }
 
@@ -137,32 +143,56 @@ func (s *sessionStore) revoke(cookieValue string) {
 	s.mu.Lock()
 	s.cleanupRevocationsLocked(time.Now())
 	s.revoked[sess.ID] = sess.ExpiresAt
-	if done, exists := s.signals[sess.ID]; exists {
+	if signal, exists := s.signals[sess.ID]; exists {
 		delete(s.signals, sess.ID)
-		close(done)
+		close(signal.done)
 	}
 	s.mu.Unlock()
 }
 
-func (s *sessionStore) revocationSignal(sessionID string) (<-chan struct{}, bool) {
+func (s *sessionStore) revocationSignal(sessionID string, expiresAt time.Time) (<-chan struct{}, func(), bool) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.cleanupRevocationsLocked(time.Now())
 	if _, revoked := s.revoked[sessionID]; revoked {
-		return nil, false
+		s.mu.Unlock()
+		return nil, nil, false
 	}
-	if done, exists := s.signals[sessionID]; exists {
-		return done, true
+	signal, exists := s.signals[sessionID]
+	if !exists {
+		signal = &sessionSignal{done: make(chan struct{}), expiresAt: expiresAt}
+		s.signals[sessionID] = signal
 	}
-	done := make(chan struct{})
-	s.signals[sessionID] = done
-	return done, true
+	signal.refs++
+	s.mu.Unlock()
+
+	var once sync.Once
+	release := func() {
+		once.Do(func() {
+			s.mu.Lock()
+			defer s.mu.Unlock()
+			current, exists := s.signals[sessionID]
+			if !exists || current != signal {
+				return
+			}
+			signal.refs--
+			if signal.refs == 0 {
+				delete(s.signals, sessionID)
+			}
+		})
+	}
+	return signal.done, release, true
 }
 
 func (s *sessionStore) cleanupRevocationsLocked(now time.Time) {
 	for id, expiresAt := range s.revoked {
 		if now.After(expiresAt) {
 			delete(s.revoked, id)
+		}
+	}
+	for id, signal := range s.signals {
+		if now.After(signal.expiresAt) {
+			delete(s.signals, id)
+			close(signal.done)
 		}
 	}
 }

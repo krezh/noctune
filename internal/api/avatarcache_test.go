@@ -32,7 +32,7 @@ func TestDiscordAvatarURLPattern(t *testing.T) {
 }
 
 func TestAvatarCacheGetPut(t *testing.T) {
-	c := newAvatarCache()
+	c := newAvatarCache(1024)
 	url := "https://cdn.discordapp.com/avatars/1/abc.png"
 
 	if _, ok := c.get(url); ok {
@@ -48,5 +48,24 @@ func TestAvatarCacheGetPut(t *testing.T) {
 	}
 	if string(got.data) != string(want.data) || got.contentType != want.contentType {
 		t.Errorf("get() = %+v, want %+v", got, want)
+	}
+}
+func TestAvatarCacheEvictsLeastRecentlyUsed(t *testing.T) {
+	c := newAvatarCache(5)
+	c.put("a", cachedAvatar{data: []byte("aa")})
+	c.put("b", cachedAvatar{data: []byte("bb")})
+	if _, ok := c.get("a"); !ok {
+		t.Fatal("expected a cache hit")
+	}
+	c.put("c", cachedAvatar{data: []byte("cc")})
+
+	if _, ok := c.get("b"); ok {
+		t.Fatal("least-recently-used entry was not evicted")
+	}
+	if _, ok := c.get("a"); !ok {
+		t.Fatal("recently used entry was evicted")
+	}
+	if _, ok := c.get("c"); !ok {
+		t.Fatal("new entry was evicted")
 	}
 }

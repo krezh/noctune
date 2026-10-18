@@ -260,7 +260,7 @@ func New(cfg *config.Config, client *bot.Client, players *player.Manager, resolv
 	srv := &Server{
 		cfg: cfg, client: client, players: players, resolver: resolver, tmpl: tmpl, bot: newBotView(self.User),
 		sessions:     newSessionStore(cfg.SessionSecret),
-		avatars:      newAvatarCache(),
+		avatars:      newAvatarCache(cfg.AvatarCacheMaxBytes),
 		searchCh:     make(map[string]chan searchJob),
 		searchCtx:    searchCtx,
 		searchCancel: searchCancel,
@@ -281,17 +281,27 @@ type searchJob struct {
 	generation           uint64
 }
 
-// queueSearch hands a query off to a per-guild worker and returns
-// immediately — resolving a query (a yt-dlp lookup) can take seconds, and
-// callers shouldn't block on it, or block each other: several people
-// queuing tracks around the same time all get an instant response, while
-// the worker resolves and enqueues them one at a time, in submission
-// order, same as if they'd been typed in one after another.
-func (srv *Server) queueSearch(guildID, query, requestedBy, requestedByAvatarURL string) {
+var errSearchQueueFull = errors.New("search queue is full")
+
+// queueSearch submits work without blocking an HTTP handler behind a full queue.
+func (srv *Server) queueSearch(guildID, query, requestedBy, requestedByAvatarURL string) error {
 	srv.searchMu.Lock()
 	if srv.closed {
 		srv.searchMu.Unlock()
-		return
+		return context.Canceled
+	}
+	srv.searchMu.Unlock()
+
+	gp, err := srv.players.Get(guildID)
+	if err != nil {
+		return err
+	}
+	generation := gp.ResolutionGeneration()
+
+	srv.searchMu.Lock()
+	if srv.closed {
+		srv.searchMu.Unlock()
+		return context.Canceled
 	}
 	ch, ok := srv.searchCh[guildID]
 	if !ok {
@@ -301,16 +311,26 @@ func (srv *Server) queueSearch(guildID, query, requestedBy, requestedByAvatarURL
 		go srv.runSearchWorker(guildID, ch)
 	}
 	srv.searchMu.Unlock()
-	generation := srv.players.Get(guildID).ResolutionGeneration()
+
+	select {
+	case <-srv.searchCtx.Done():
+		return srv.searchCtx.Err()
+	default:
+	}
 	select {
 	case ch <- searchJob{query: query, requestedBy: requestedBy, requestedByAvatarURL: requestedByAvatarURL, generation: generation}:
-	case <-srv.searchCtx.Done():
+		return nil
+	default:
+		return errSearchQueueFull
 	}
 }
 
 func (srv *Server) runSearchWorker(guildID string, ch <-chan searchJob) {
 	defer srv.searchWG.Done()
-	gp := srv.players.Get(guildID)
+	gp, err := srv.players.Get(guildID)
+	if err != nil {
+		return
+	}
 	for {
 		var job searchJob
 		select {
@@ -358,6 +378,14 @@ func (srv *Server) Close(ctx context.Context) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	}
+}
+func (srv *Server) requestPlayer(w http.ResponseWriter, guildID string) (*player.GuildPlayer, bool) {
+	gp, err := srv.players.Get(guildID)
+	if err != nil {
+		http.Error(w, "server is shutting down", http.StatusServiceUnavailable)
+		return nil, false
+	}
+	return gp, true
 }
 
 func (srv *Server) Handler() http.Handler {
@@ -514,7 +542,11 @@ func (srv *Server) requireVoicePresence(next http.HandlerFunc) http.HandlerFunc 
 			return
 		}
 		guildID := r.PathValue("guildID")
-		botChannelID := srv.players.Get(guildID).Snapshot().VoiceChannelID
+		gp, ok := srv.requestPlayer(w, guildID)
+		if !ok {
+			return
+		}
+		botChannelID := gp.Snapshot().VoiceChannelID
 		if botChannelID == "" {
 			srv.renderToast(w, "noctune isn't connected to a voice channel here.")
 			return
@@ -662,7 +694,11 @@ func (srv *Server) handleGuildPage(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	pd := srv.panelData(guildID, g, showChannelPicker(sessionFromContext(r.Context())))
+	pd, err := srv.panelData(guildID, g, showChannelPicker(sessionFromContext(r.Context())))
+	if err != nil {
+		http.Error(w, "server is shutting down", http.StatusServiceUnavailable)
+		return
+	}
 	srv.render(w, "page:guild", struct {
 		Bot     BotView
 		Guild   GuildView
@@ -675,17 +711,19 @@ func (srv *Server) handleGuildPage(w http.ResponseWriter, r *http.Request) {
 func (srv *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	guildID := r.PathValue("guildID")
 	var (
-		revoked     <-chan struct{}
-		expired     <-chan time.Time
-		expiryTimer *time.Timer
+		revoked           <-chan struct{}
+		releaseRevocation func()
+		expired           <-chan time.Time
+		expiryTimer       *time.Timer
 	)
 	if sess := sessionFromContext(r.Context()); sess != nil {
 		var active bool
-		revoked, active = srv.sessions.revocationSignal(sess.ID)
+		revoked, releaseRevocation, active = srv.sessions.revocationSignal(sess.ID, sess.ExpiresAt)
 		if !active {
 			srv.redirectLogin(w, r)
 			return
 		}
+		defer releaseRevocation()
 		expiryTimer = time.NewTimer(time.Until(sess.ExpiresAt))
 		defer expiryTimer.Stop()
 		expired = expiryTimer.C
@@ -708,7 +746,10 @@ func (srv *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 
-	gp := srv.players.Get(guildID)
+	gp, ok := srv.requestPlayer(w, guildID)
+	if !ok {
+		return
+	}
 	ch, cancel := gp.Subscribe()
 	defer cancel()
 
@@ -814,7 +855,11 @@ func (srv *Server) handleJoin(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-	if err := srv.players.Get(guildID).Join(r.Context(), channelID); err != nil {
+	gp, ok := srv.requestPlayer(w, guildID)
+	if !ok {
+		return
+	}
+	if err := gp.Join(r.Context(), channelID); err != nil {
 		srv.renderToast(w, fmt.Sprintf("Couldn't join voice channel: %v", err))
 		return
 	}
@@ -822,8 +867,11 @@ func (srv *Server) handleJoin(w http.ResponseWriter, r *http.Request) {
 }
 
 func (srv *Server) handleLeave(w http.ResponseWriter, r *http.Request) {
-	guildID := r.PathValue("guildID")
-	_ = srv.players.Get(guildID).Leave()
+	gp, ok := srv.requestPlayer(w, r.PathValue("guildID"))
+	if !ok {
+		return
+	}
+	_ = gp.Leave()
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -843,7 +891,10 @@ func (srv *Server) handlePlay(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	gp := srv.players.Get(guildID)
+	gp, ok := srv.requestPlayer(w, guildID)
+	if !ok {
+		return
+	}
 	sess := sessionFromContext(r.Context())
 	userChannelID, hasUserChannel := srv.userVoiceChannel(sess, guildID)
 	// Read once: gp.Snapshot() again after the branch below decides could
@@ -879,7 +930,14 @@ func (srv *Server) handlePlay(w http.ResponseWriter, r *http.Request) {
 	if sess != nil && sess.Username != "" {
 		requestedBy, requestedByAvatarURL = sess.Username, sess.AvatarURL
 	}
-	srv.queueSearch(guildID, query, requestedBy, requestedByAvatarURL)
+	if err := srv.queueSearch(guildID, query, requestedBy, requestedByAvatarURL); err != nil {
+		if errors.Is(err, errSearchQueueFull) {
+			srv.renderToast(w, "The search queue is full. Try again shortly.")
+		} else {
+			http.Error(w, "server is shutting down", http.StatusServiceUnavailable)
+		}
+		return
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -913,82 +971,107 @@ func (srv *Server) handleSuggest(w http.ResponseWriter, r *http.Request) {
 }
 
 func (srv *Server) handlePause(w http.ResponseWriter, r *http.Request) {
-	guildID := r.PathValue("guildID")
-	_ = srv.players.Get(guildID).Pause()
+	gp, ok := srv.requestPlayer(w, r.PathValue("guildID"))
+	if !ok {
+		return
+	}
+	_ = gp.Pause()
 	w.WriteHeader(http.StatusNoContent)
 }
 
 func (srv *Server) handleResume(w http.ResponseWriter, r *http.Request) {
-	guildID := r.PathValue("guildID")
-	_ = srv.players.Get(guildID).Resume()
+	gp, ok := srv.requestPlayer(w, r.PathValue("guildID"))
+	if !ok {
+		return
+	}
+	_ = gp.Resume()
 	w.WriteHeader(http.StatusNoContent)
 }
 
 func (srv *Server) handleSkip(w http.ResponseWriter, r *http.Request) {
-	guildID := r.PathValue("guildID")
-	_ = srv.players.Get(guildID).Skip()
+	gp, ok := srv.requestPlayer(w, r.PathValue("guildID"))
+	if !ok {
+		return
+	}
+	_ = gp.Skip()
 	w.WriteHeader(http.StatusNoContent)
 }
 
 func (srv *Server) handleStop(w http.ResponseWriter, r *http.Request) {
-	guildID := r.PathValue("guildID")
-	_ = srv.players.Get(guildID).Stop()
+	gp, ok := srv.requestPlayer(w, r.PathValue("guildID"))
+	if !ok {
+		return
+	}
+	_ = gp.Stop()
 	w.WriteHeader(http.StatusNoContent)
 }
 
 func (srv *Server) handleVolume(w http.ResponseWriter, r *http.Request) {
-	guildID := r.PathValue("guildID")
+	gp, ok := srv.requestPlayer(w, r.PathValue("guildID"))
+	if !ok {
+		return
+	}
 	if level, err := strconv.Atoi(r.FormValue("level")); err == nil {
-		_ = srv.players.Get(guildID).SetVolume(level)
+		_ = gp.SetVolume(level)
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
 func (srv *Server) handleLoop(w http.ResponseWriter, r *http.Request) {
-	guildID := r.PathValue("guildID")
-	srv.players.Get(guildID).SetLoop(player.LoopMode(r.FormValue("mode")))
+	gp, ok := srv.requestPlayer(w, r.PathValue("guildID"))
+	if !ok {
+		return
+	}
+	gp.SetLoop(player.LoopMode(r.FormValue("mode")))
 	w.WriteHeader(http.StatusNoContent)
 }
 
 func (srv *Server) handleQueueRemove(w http.ResponseWriter, r *http.Request) {
-	guildID := r.PathValue("guildID")
-	_ = srv.players.Get(guildID).Remove(r.FormValue("id"))
+	gp, ok := srv.requestPlayer(w, r.PathValue("guildID"))
+	if !ok {
+		return
+	}
+	_ = gp.Remove(r.FormValue("id"))
 	w.WriteHeader(http.StatusNoContent)
 }
 
 func (srv *Server) handleQueuePlayNow(w http.ResponseWriter, r *http.Request) {
-	guildID := r.PathValue("guildID")
-	if err := srv.players.Get(guildID).PlayNow(r.FormValue("id")); err != nil {
+	gp, ok := srv.requestPlayer(w, r.PathValue("guildID"))
+	if !ok {
+		return
+	}
+	if err := gp.PlayNow(r.FormValue("id")); err != nil {
 		log.Printf("noctune: web play-now: %v", err)
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// handleQueueReorder applies a drag-and-drop reorder from the client.
-// GuildPlayer.Reorder rejects an id list that doesn't exactly match the
-// current queue — expected if someone else's action (an add, a remove)
-// raced the drag — and the next notify() from that action already
-// carries the correct order to every client, so there's nothing useful
-// to surface to the user beyond letting the SSE push self-correct it.
+// handleQueueReorder applies a complete queue order from the client.
 func (srv *Server) handleQueueReorder(w http.ResponseWriter, r *http.Request) {
-	guildID := r.PathValue("guildID")
 	if err := r.ParseForm(); err != nil {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-	if err := srv.players.Get(guildID).Reorder(r.Form["id"]); err != nil {
+	gp, ok := srv.requestPlayer(w, r.PathValue("guildID"))
+	if !ok {
+		return
+	}
+	if err := gp.Reorder(r.Form["id"]); err != nil {
 		log.Printf("noctune: web queue reorder: %v", err)
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
 func (srv *Server) handleHistoryRequeue(w http.ResponseWriter, r *http.Request) {
-	guildID := r.PathValue("guildID")
+	gp, ok := srv.requestPlayer(w, r.PathValue("guildID"))
+	if !ok {
+		return
+	}
 	requestedBy, requestedByAvatarURL := "web", ""
 	if sess := sessionFromContext(r.Context()); sess != nil && sess.Username != "" {
 		requestedBy, requestedByAvatarURL = sess.Username, sess.AvatarURL
 	}
-	if err := srv.players.Get(guildID).Requeue(r.FormValue("id"), requestedBy, requestedByAvatarURL); err != nil {
+	if err := gp.Requeue(r.FormValue("id"), requestedBy, requestedByAvatarURL); err != nil {
 		srv.renderToast(w, err.Error())
 		return
 	}
@@ -1002,22 +1085,28 @@ func (srv *Server) render(w http.ResponseWriter, name string, data any) {
 	}
 }
 
-func (srv *Server) panelData(guildID string, g discord.Guild, showPicker bool) PanelData {
-	st := srv.players.Get(guildID).Snapshot()
+func (srv *Server) panelData(guildID string, g discord.Guild, showPicker bool) (PanelData, error) {
+	gp, err := srv.players.Get(guildID)
+	if err != nil {
+		return PanelData{}, err
+	}
+	st := gp.Snapshot()
 	return PanelData{
 		GuildID:           guildID,
 		Channels:          voiceChannels(srv.client, g.ID),
 		State:             st,
 		Progress:          computeProgress(st),
 		ShowChannelPicker: showPicker,
-	}
+	}, nil
 }
 
 func (srv *Server) listGuilds() []GuildView {
 	var guilds []GuildView
 	for g := range srv.client.Caches.Guilds() {
 		gv := guildView(g)
-		gv.Live = srv.players.Get(gv.ID).Snapshot().VoiceChannelID != ""
+		if gp, err := srv.players.Get(gv.ID); err == nil {
+			gv.Live = gp.Snapshot().VoiceChannelID != ""
+		}
 		guilds = append(guilds, gv)
 	}
 	sort.Slice(guilds, func(i, j int) bool { return guilds[i].Name < guilds[j].Name })

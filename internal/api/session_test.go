@@ -1,6 +1,9 @@
 package api
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestSessionRoundTrip(t *testing.T) {
 	store := newSessionStore("a-fixed-32-byte-plus-test-secret!!")
@@ -121,15 +124,37 @@ func TestSessionRevocationSignal(t *testing.T) {
 	if !ok {
 		t.Fatal("get: expected a valid session")
 	}
-	done, active := store.revocationSignal(sess.ID)
+	done, release, active := store.revocationSignal(sess.ID, sess.ExpiresAt)
 	if !active {
 		t.Fatal("revocationSignal rejected active session")
 	}
+	defer release()
 
 	store.revoke(cookie)
 	select {
 	case <-done:
 	default:
 		t.Fatal("revocation did not close the session signal")
+	}
+}
+
+func TestSessionRevocationSignalReleased(t *testing.T) {
+	store := newSessionStore("a-fixed-32-byte-plus-test-secret!!")
+	expiresAt := time.Now().Add(time.Hour)
+	_, releaseFirst, active := store.revocationSignal("session", expiresAt)
+	if !active {
+		t.Fatal("first revocationSignal rejected active session")
+	}
+	_, releaseSecond, active := store.revocationSignal("session", expiresAt)
+	if !active {
+		t.Fatal("second revocationSignal rejected active session")
+	}
+	releaseFirst()
+	if got := len(store.signals); got != 1 {
+		t.Fatalf("signals after first release = %d, want 1", got)
+	}
+	releaseSecond()
+	if got := len(store.signals); got != 0 {
+		t.Fatalf("signals after final release = %d, want 0", got)
 	}
 }

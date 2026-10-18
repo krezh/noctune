@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"html/template"
 	"io"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 	"github.com/disgoorg/disgo/discord"
 	"github.com/disgoorg/snowflake/v2"
 
+	"github.com/krezh/noctune/internal/config"
 	"github.com/krezh/noctune/internal/player"
 	"github.com/krezh/noctune/web"
 )
@@ -71,17 +73,29 @@ func TestServerCloseWaitsForSearchWorkers(t *testing.T) {
 
 func TestQueueSearchAfterCloseReturns(t *testing.T) {
 	searchCtx, searchCancel := context.WithCancel(context.Background())
+	defer searchCancel()
 	srv := &Server{searchCtx: searchCtx, searchCancel: searchCancel, closed: true}
-	done := make(chan struct{})
-	go func() {
-		srv.queueSearch("123", "query", "user", "")
-		close(done)
-	}()
+	if err := srv.queueSearch("123", "query", "user", ""); !errors.Is(err, context.Canceled) {
+		t.Fatalf("queueSearch() error = %v, want context canceled", err)
+	}
+}
 
-	select {
-	case <-done:
-	case <-time.After(time.Second):
-		t.Fatal("queueSearch blocked after server shutdown")
+func TestQueueSearchRejectsFullQueue(t *testing.T) {
+	searchCtx, searchCancel := context.WithCancel(context.Background())
+	defer searchCancel()
+	manager := player.NewManager(nil, nil, &config.Config{})
+	ch := make(chan searchJob, 64)
+	for range cap(ch) {
+		ch <- searchJob{}
+	}
+	srv := &Server{
+		players:      manager,
+		searchCtx:    searchCtx,
+		searchCancel: searchCancel,
+		searchCh:     map[string]chan searchJob{"123": ch},
+	}
+	if err := srv.queueSearch("123", "query", "user", ""); !errors.Is(err, errSearchQueueFull) {
+		t.Fatalf("queueSearch() error = %v, want queue full", err)
 	}
 }
 
