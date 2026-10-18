@@ -190,8 +190,8 @@ func TestLeaveWaitsForPendingJoin(t *testing.T) {
 	leaveDone := make(chan error, 1)
 	go func() { leaveDone <- gp.Leave() }()
 	select {
-	case <-leaveDone:
-		t.Fatal("Leave returned while Join was still opening")
+	case err := <-leaveDone:
+		t.Fatalf("Leave returned while Join was still opening: %v", err)
 	case <-time.After(10 * time.Millisecond):
 	}
 

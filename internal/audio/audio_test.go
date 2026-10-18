@@ -24,8 +24,8 @@ func TestStopIsConcurrentSafe(t *testing.T) {
 		t.Fatal("Stop did not close stopCh")
 	}
 	select {
-	case <-h.Done():
-		t.Fatal("Done fired before cleanup completed")
+	case err := <-h.Done():
+		t.Fatalf("Done fired before cleanup completed: %v", err)
 	default:
 	}
 	close(h.cleanupDone)
@@ -93,8 +93,8 @@ func TestDoneWaitsForBufferedFrames(t *testing.T) {
 			t.Fatalf("provide buffered frame: %v", err)
 		}
 		select {
-		case <-h.Done():
-			t.Fatal("Done fired before buffered frames were consumed")
+		case err := <-h.Done():
+			t.Fatalf("Done fired before buffered frames were consumed: %v", err)
 		default:
 		}
 	}
