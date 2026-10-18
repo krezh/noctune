@@ -1,7 +1,5 @@
 // Command noctune runs the Discord bot and its web control panel in one
-// process. Everything is configured from the environment (see
-// internal/config) and nothing is persisted to disk — restarting the
-// process is always safe and simply starts every guild back at idle.
+// process. Player state is in memory; downloaded audio may be cached on disk.
 package main
 
 import (
@@ -9,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -44,13 +43,19 @@ func run(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("config: %w", err)
 	}
+	configureLogging(cfg.LogLevel)
 
 	client, err := bot.NewClient(cfg)
 	if err != nil {
 		return fmt.Errorf("create discord client: %w", err)
 	}
 
-	ytClient := youtube.New(cfg.YtDlpPath, cfg.CacheDir)
+	ytClient := youtube.New(youtube.Options{
+		YtDlpPath:     cfg.YtDlpPath,
+		CacheDir:      cfg.CacheDir,
+		CacheMaxBytes: cfg.CacheMaxBytes,
+		MaxProcesses:  cfg.MaxYtDlpProcesses,
+	})
 	spClient := spotify.New(ctx, cfg.SpotifyClientID, cfg.SpotifyClientSecret)
 	resolver := resolve.New(spClient, ytClient)
 	players := player.NewManager(client, ytClient, cfg)
@@ -106,6 +111,13 @@ func run(ctx context.Context) error {
 		shutdownErrs = append(shutdownErrs, fmt.Errorf("web server: %w", serveErr))
 	}
 	return errors.Join(shutdownErrs...)
+}
+func configureLogging(levelName string) {
+	var level slog.Level
+	if err := level.UnmarshalText([]byte(levelName)); err != nil {
+		level = slog.LevelInfo
+	}
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level})))
 }
 
 func newHTTPServer(addr string, handler http.Handler) *http.Server {

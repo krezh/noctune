@@ -49,11 +49,12 @@ type Config struct {
 	LogLevel              string `env:"LOG_LEVEL" envDefault:"info"`
 	FFmpegPath            string `env:"FFMPEG_PATH" envDefault:"ffmpeg"`
 	YtDlpPath             string `env:"YTDLP_PATH" envDefault:"yt-dlp"`
-	// CacheDir stores downloaded track audio on disk so replaying the same
-	// track (loop mode, requeuing it, a volume change mid-track restarting
-	// the encoder) skips re-fetching it from YouTube. Empty disables
-	// caching; tracks are always streamed fresh.
-	CacheDir string `env:"CACHE_DIR" envDefault:"/tmp/noctune-cache"`
+	MaxYtDlpProcesses     int    `env:"MAX_YTDLP_PROCESSES" envDefault:"8"`
+	// CacheDir stores downloaded audio. CacheMaxBytes bounds its total
+	// retained size; zero disables caching.
+	CacheDir            string `env:"CACHE_DIR" envDefault:"/tmp/noctune-cache"`
+	CacheMaxBytes       int64  `env:"CACHE_MAX_BYTES" envDefault:"1073741824"`
+	AvatarCacheMaxBytes int64  `env:"AVATAR_CACHE_MAX_BYTES" envDefault:"16777216"`
 }
 
 func Load() (*Config, error) {
@@ -63,6 +64,27 @@ func Load() (*Config, error) {
 	}
 	if cfg.DefaultVolume < 0 || cfg.DefaultVolume > 100 {
 		return nil, fmt.Errorf("DEFAULT_VOLUME must be between 0 and 100")
+	}
+	if cfg.MaxQueueSize <= 0 {
+		return nil, fmt.Errorf("MAX_QUEUE_SIZE must be greater than 0")
+	}
+	if cfg.IdleDisconnectSeconds < 0 {
+		return nil, fmt.Errorf("IDLE_DISCONNECT_SECONDS must be at least 0")
+	}
+	if cfg.MaxYtDlpProcesses <= 0 {
+		return nil, fmt.Errorf("MAX_YTDLP_PROCESSES must be greater than 0")
+	}
+	if cfg.CacheMaxBytes < 0 {
+		return nil, fmt.Errorf("CACHE_MAX_BYTES must be at least 0")
+	}
+	if cfg.AvatarCacheMaxBytes < 0 {
+		return nil, fmt.Errorf("AVATAR_CACHE_MAX_BYTES must be at least 0")
+	}
+	cfg.LogLevel = strings.ToLower(strings.TrimSpace(cfg.LogLevel))
+	switch cfg.LogLevel {
+	case "debug", "info", "warn", "error":
+	default:
+		return nil, fmt.Errorf("LOG_LEVEL must be debug, info, warn, or error")
 	}
 	if (cfg.DiscordClientID == "") != (cfg.DiscordClientSecret == "") {
 		return nil, fmt.Errorf("DISCORD_CLIENT_ID and DISCORD_CLIENT_SECRET must be set together")

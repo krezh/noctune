@@ -40,6 +40,9 @@
         -e FFMPEG_PATH \
         -e YTDLP_PATH \
         -e CACHE_DIR \
+        -e CACHE_MAX_BYTES \
+        -e AVATAR_CACHE_MAX_BYTES \
+        -e MAX_YTDLP_PROCESSES \
         -p 8080:8080 \
         noctune:latest
   '';
