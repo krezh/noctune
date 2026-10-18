@@ -6,6 +6,26 @@
 
 * **web:** derive page titles and favicon from the Discord bot profile
 
+## [0.2.3](https://github.com/krezh/noctune/compare/0.2.2...0.2.3) (2026-10-18)
+
+
+### Bug Fixes
+
+* **api:** bound queues and release cached state ([bbd3889](https://github.com/krezh/noctune/commit/bbd3889ab54e5700445a333837d9dd11bddb0f1f))
+* **audio:** preserve mute and honor ffmpeg path ([e75dc06](https://github.com/krezh/noctune/commit/e75dc0637ed7f9d056b6f3d2ad317933831460bf))
+* **bot:** enforce voice ownership and coordinate status ([b2515c6](https://github.com/krezh/noctune/commit/b2515c6cee43c2ae8104f6a8f9b671d33173537d))
+* **ci:** run lint checks in devenv test ([66165f6](https://github.com/krezh/noctune/commit/66165f6f9796e0e93d93c729aac0a091c21eff25))
+* **config:** wire runtime limits and log level ([98e5c81](https://github.com/krezh/noctune/commit/98e5c81c1455b165ac7b78bf71af07e782e68cc9))
+* **player:** make manager shutdown exhaustive ([edd307b](https://github.com/krezh/noctune/commit/edd307b65c1eb6fa888e0e4dd424909ceef27823))
+* **player:** preserve queued tracks until voice joins ([175541b](https://github.com/krezh/noctune/commit/175541bc8a65ea0a50c3afd83895da61bc764d4c))
+* **web:** default to user's active voice server ([627dc7d](https://github.com/krezh/noctune/commit/627dc7dee5ae587dcbf42d9b46abf9844c7f61b6))
+* **youtube:** bound subprocesses and audio cache ([bc6cd57](https://github.com/krezh/noctune/commit/bc6cd57833e5aaff8c6807619cc77ab75310b630))
+
+
+### Miscellaneous Chores
+
+* **devenv:** update locked inputs ([4c7cfd8](https://github.com/krezh/noctune/commit/4c7cfd8ac0b60ca999eb60f1905d20217add08b7))
+
 ## [0.2.2](https://github.com/krezh/noctune/compare/0.2.1...0.2.2) (2026-10-05)
 
 
