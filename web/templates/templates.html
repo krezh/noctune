@@ -25,7 +25,6 @@
 {{define "nav"}}
 <header class="top">
   <div class="brand">
-    {{template "icon-eq" "idle"}}
     <h1>{{.Bot.Name}}</h1>
   </div>
   <nav>
@@ -43,7 +42,7 @@
 {{end}}
 
 {{define "sidebar"}}
-<aside class="sidebar">
+<aside class="sidebar" aria-label="Servers">
   <div class="sidebar-title">Servers</div>
   {{range .Guilds}}
   <a class="guild{{if eq .ID $.Guild.ID}} active{{end}}" href="/g/{{.ID}}">

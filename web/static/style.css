@@ -851,7 +851,31 @@ input[type=text]:focus, input[type=number]:focus, input[type=password]:focus, se
 
 @media (max-width: 760px) {
   html, body { font-size: 15px; }
-  .sidebar { display: none; }
+  .shell { flex-direction: column; }
+  .sidebar {
+    display: flex;
+    width: 100%;
+    gap: 0.35rem;
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+    padding: 0.4rem;
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .sidebar-title { display: none; }
+  .sidebar .guild {
+    flex: 0 0 auto;
+    max-width: 14rem;
+    min-height: 2.5rem;
+    padding: 0.4rem 0.65rem;
+    border-left: 0;
+    border-bottom: 2px solid transparent;
+  }
+  .sidebar .guild.active {
+    border-left-color: transparent;
+    border-bottom-color: var(--amber);
+  }
+  .sidebar .guild-name { max-width: 9rem; }
 }
 
 @media (max-width: 480px) {
