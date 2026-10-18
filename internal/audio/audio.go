@@ -43,8 +43,9 @@ const zmqCommandTimeout = 3 * time.Second
 var zmqSocketCounter atomic.Uint64
 
 type Options struct {
-	// Volume as a percentage, 100 = unchanged.
-	Volume int
+	// Volume is a percentage from 0 to 100.
+	Volume     int
+	FFmpegPath string
 }
 
 // Handle controls one in-flight track and implements voice.OpusFrameProvider.
@@ -75,9 +76,8 @@ type Handle struct {
 	framesSent      atomic.Int64
 	starvationCount atomic.Int64 // times ProvideOpusFrame had to wait for a frame
 
-	mu       sync.Mutex
-	paused   bool
-	resumeCh chan struct{}
+	mu     sync.Mutex
+	paused bool
 }
 
 // Play starts encoding stream (already-decoded or containerized audio,
@@ -87,8 +87,13 @@ type Handle struct {
 // connection's SetOpusFrameProvider.
 func Play(stream io.ReadCloser, opts Options) (*Handle, error) {
 	vol := opts.Volume
-	if vol <= 0 {
-		vol = 100
+	if vol < 0 || vol > 100 {
+		_ = stream.Close()
+		return nil, fmt.Errorf("volume must be between 0 and 100")
+	}
+	ffmpegPath := opts.FFmpegPath
+	if ffmpegPath == "" {
+		ffmpegPath = "ffmpeg"
 	}
 
 	sockPath := filepath.Join(os.TempDir(), fmt.Sprintf("noctune-azmq-%d-%d.sock", os.Getpid(), zmqSocketCounter.Add(1)))
@@ -154,7 +159,7 @@ func Play(stream io.ReadCloser, opts Options) (*Handle, error) {
 		"pipe:1",
 	}
 
-	cmd := exec.Command("ffmpeg", args...)
+	cmd := exec.Command(ffmpegPath, args...)
 	cmd.Stdin = stream
 
 	stdout, err := cmd.StdoutPipe()
@@ -182,7 +187,6 @@ func Play(stream io.ReadCloser, opts Options) (*Handle, error) {
 		doneCh:      make(chan error, 1),
 		cleanupDone: make(chan struct{}),
 		frames:      make(chan []byte, frameBufferSize),
-		resumeCh:    make(chan struct{}),
 		stderrDone:  make(chan struct{}),
 	}
 	log.Printf("audio: encode session started")
@@ -386,12 +390,8 @@ func (h *Handle) Pause() {
 
 func (h *Handle) Resume() {
 	h.mu.Lock()
-	defer h.mu.Unlock()
-	if h.paused {
-		h.paused = false
-		close(h.resumeCh)
-		h.resumeCh = make(chan struct{})
-	}
+	h.paused = false
+	h.mu.Unlock()
 }
 
 // SetVolume changes the running ffmpeg encoder's volume filter live, over

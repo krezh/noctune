@@ -53,6 +53,30 @@ func TestPlayReportsFFmpegFailure(t *testing.T) {
 		t.Fatalf("Done() error = %v, want ffmpeg failure", err)
 	}
 }
+func TestPlayPreservesZeroVolumeAndConfiguredFFmpeg(t *testing.T) {
+	dir := t.TempDir()
+	capture := filepath.Join(dir, "args")
+	ffmpeg := filepath.Join(dir, "custom-ffmpeg")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$CAPTURE\"\nexit 42\n"
+	if err := os.WriteFile(ffmpeg, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake ffmpeg: %v", err)
+	}
+	t.Setenv("CAPTURE", capture)
+	t.Setenv("PATH", dir)
+
+	h, err := Play(io.NopCloser(strings.NewReader("audio")), Options{Volume: 0, FFmpegPath: ffmpeg})
+	if err != nil {
+		t.Fatalf("Play() error = %v", err)
+	}
+	_, _ = h.ProvideOpusFrame()
+	args, err := os.ReadFile(capture)
+	if err != nil {
+		t.Fatalf("read captured arguments: %v", err)
+	}
+	if !strings.Contains(string(args), "volume=volume=0.000000") {
+		t.Fatalf("ffmpeg arguments did not preserve mute: %s", args)
+	}
+}
 
 func TestDoneWaitsForBufferedFrames(t *testing.T) {
 	h := &Handle{
