@@ -845,7 +845,12 @@ func (gp *GuildPlayer) playbackLoop() {
 		volume := gp.volume
 		gp.mu.Unlock()
 
-		handle, err := audio.Play(stream, audio.Options{Volume: volume, FFmpegPath: gp.cfg.FFmpegPath})
+		handle, err := audio.Play(stream, audio.Options{
+			Volume:         volume,
+			FFmpegPath:     gp.cfg.FFmpegPath,
+			Normalize:      gp.cfg.NormalizeLoudness,
+			LoudnessTarget: gp.cfg.LoudnessTargetLUFS,
+		})
 		if err != nil {
 			trackCancel()
 			log.Printf("noctune: play %q: %v", track.Title, err)

@@ -43,7 +43,12 @@ type Config struct {
 	// random value at startup.
 	SessionSecret string `env:"SESSION_SECRET"`
 
-	DefaultVolume         int    `env:"DEFAULT_VOLUME" envDefault:"100"`
+	DefaultVolume int `env:"DEFAULT_VOLUME" envDefault:"100"`
+	// NormalizeLoudness evens out perceived loudness across tracks,
+	// targeting LoudnessTargetLUFS (EBU R128 integrated loudness).
+	NormalizeLoudness  bool    `env:"NORMALIZE_LOUDNESS" envDefault:"true"`
+	LoudnessTargetLUFS float64 `env:"LOUDNESS_TARGET_LUFS" envDefault:"-14"`
+
 	MaxQueueSize          int    `env:"MAX_QUEUE_SIZE" envDefault:"500"`
 	IdleDisconnectSeconds int    `env:"IDLE_DISCONNECT_SECONDS" envDefault:"300"`
 	LogLevel              string `env:"LOG_LEVEL" envDefault:"info"`
@@ -64,6 +69,9 @@ func Load() (*Config, error) {
 	}
 	if cfg.DefaultVolume < 0 || cfg.DefaultVolume > 100 {
 		return nil, fmt.Errorf("DEFAULT_VOLUME must be between 0 and 100")
+	}
+	if cfg.LoudnessTargetLUFS < -70 || cfg.LoudnessTargetLUFS > -5 {
+		return nil, fmt.Errorf("LOUDNESS_TARGET_LUFS must be between -70 and -5")
 	}
 	if cfg.MaxQueueSize <= 0 {
 		return nil, fmt.Errorf("MAX_QUEUE_SIZE must be greater than 0")

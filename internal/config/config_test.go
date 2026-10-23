@@ -40,6 +40,8 @@ func TestLoadRejectsInvalidLimitsAndLogLevel(t *testing.T) {
 		{name: "audio cache", key: "CACHE_MAX_BYTES", value: "-1"},
 		{name: "avatar cache", key: "AVATAR_CACHE_MAX_BYTES", value: "-1"},
 		{name: "log level", key: "LOG_LEVEL", value: "verbose"},
+		{name: "loudness target too loud", key: "LOUDNESS_TARGET_LUFS", value: "0"},
+		{name: "loudness target too quiet", key: "LOUDNESS_TARGET_LUFS", value: "-80"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("DISCORD_BOT_TOKEN", "bot-token")

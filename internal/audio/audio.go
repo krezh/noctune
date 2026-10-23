@@ -20,6 +20,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -40,12 +41,34 @@ const frameBufferSize = 250
 // control socket.
 const zmqCommandTimeout = 3 * time.Second
 
+// loudnormLookahead is how much input loudnorm's dynamic mode buffers
+// before it emits its first frame (libavfilter/af_loudnorm.c, 3000ms).
+const loudnormLookahead = 3
+
+// readrateBurstSeconds is the cushion of encoded audio ffmpeg front-loads
+// ahead of real time — see the -re comment in Play.
+const readrateBurstSeconds = 2
+
+// loudnormTruePeak and loudnormLRA are loudnorm's TP and LRA targets. The
+// LRA is deliberately wide so music keeps its dynamics and loudnorm only
+// rides overall level instead of compressing within a track.
+const (
+	loudnormTruePeak = -1.5
+	loudnormLRA      = 20
+)
+
 var zmqSocketCounter atomic.Uint64
 
 type Options struct {
 	// Volume is a percentage from 0 to 100.
 	Volume     int
 	FFmpegPath string
+	// Normalize runs the track through ffmpeg's loudnorm (EBU R128) so
+	// quiet and loud tracks play at the same perceived loudness, targeting
+	// LoudnessTarget LUFS with a true-peak limiter to stop boosted quiet
+	// tracks from clipping.
+	Normalize      bool
+	LoudnessTarget float64
 }
 
 // Handle controls one in-flight track and implements voice.OpusFrameProvider.
@@ -106,7 +129,21 @@ func Play(stream io.ReadCloser, opts Options) (*Handle, error) {
 	// restart. bind_address needs its colon backslash-escaped twice — once
 	// for ffmpeg's filtergraph value parser, once for its AVOption string
 	// parser underneath — confirmed empirically against a real azmq filter.
-	afChain := fmt.Sprintf("azmq=bind_address=ipc\\\\://%s,volume=volume=%f:eval=frame", sockPath, float64(vol)/100)
+	//
+	// loudnorm sits before volume so it normalizes the source and the
+	// user's volume still scales the normalized result, rather than
+	// loudnorm undoing it. Its input has no measured stats (the track is a
+	// live stream), so it runs in dynamic mode.
+	afChain := fmt.Sprintf("azmq=bind_address=ipc\\\\://%s", sockPath)
+	burst := readrateBurstSeconds
+	if opts.Normalize {
+		afChain += fmt.Sprintf(",loudnorm=I=%g:TP=%g:LRA=%d", opts.LoudnessTarget, loudnormTruePeak, loudnormLRA)
+		// loudnorm withholds output until it has its lookahead's worth of
+		// input, so the burst grows by that much to keep the same cushion
+		// of encoded audio ahead of playback.
+		burst += loudnormLookahead
+	}
+	afChain += fmt.Sprintf(",volume=volume=%f:eval=frame", float64(vol)/100)
 
 	args := []string{
 		// -re paces ffmpeg's reading/encoding to real time instead of
@@ -140,7 +177,7 @@ func Play(stream io.ReadCloser, opts Options) (*Handle, error) {
 		// to ~2s. Short pauses (a few seconds) recover fast enough not to
 		// matter; a long AFK-style pause won't.
 		"-re",
-		"-readrate_initial_burst", "2",
+		"-readrate_initial_burst", strconv.Itoa(burst),
 		"-readrate_catchup", "3",
 		"-thread_queue_size", "4096", "-i", "pipe:0",
 		"-map", "0:a",

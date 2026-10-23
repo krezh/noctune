@@ -78,6 +78,66 @@ func TestPlayPreservesZeroVolumeAndConfiguredFFmpeg(t *testing.T) {
 	}
 }
 
+func TestPlayLoudnessNormalization(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		opts      Options
+		wantChain string
+		wantBurst string
+	}{
+		{
+			name:      "enabled",
+			opts:      Options{Volume: 50, Normalize: true, LoudnessTarget: -14},
+			wantChain: ",loudnorm=I=-14:TP=-1.5:LRA=20,volume=volume=0.500000:eval=frame",
+			wantBurst: "5",
+		},
+		{
+			name:      "disabled",
+			opts:      Options{Volume: 50, LoudnessTarget: -14},
+			wantChain: ",volume=volume=0.500000:eval=frame",
+			wantBurst: "2",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			capture := filepath.Join(dir, "args")
+			ffmpeg := filepath.Join(dir, "custom-ffmpeg")
+			script := "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$CAPTURE\"\nexit 42\n"
+			if err := os.WriteFile(ffmpeg, []byte(script), 0o755); err != nil {
+				t.Fatalf("write fake ffmpeg: %v", err)
+			}
+			t.Setenv("CAPTURE", capture)
+			tc.opts.FFmpegPath = ffmpeg
+
+			h, err := Play(io.NopCloser(strings.NewReader("audio")), tc.opts)
+			if err != nil {
+				t.Fatalf("Play() error = %v", err)
+			}
+			_, _ = h.ProvideOpusFrame()
+			raw, err := os.ReadFile(capture)
+			if err != nil {
+				t.Fatalf("read captured arguments: %v", err)
+			}
+			args := strings.Split(strings.TrimSpace(string(raw)), "\n")
+			var chain, burst string
+			for i, arg := range args[:len(args)-1] {
+				switch arg {
+				case "-af":
+					chain = args[i+1]
+				case "-readrate_initial_burst":
+					burst = args[i+1]
+				}
+			}
+			if !strings.HasSuffix(chain, tc.wantChain) {
+				t.Fatalf("filter chain = %q, want suffix %q", chain, tc.wantChain)
+			}
+			if burst != tc.wantBurst {
+				t.Fatalf("-readrate_initial_burst = %q, want %q", burst, tc.wantBurst)
+			}
+		})
+	}
+}
+
 func TestDoneWaitsForBufferedFrames(t *testing.T) {
 	h := &Handle{
 		stopCh: make(chan struct{}),

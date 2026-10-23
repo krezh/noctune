@@ -42,6 +42,8 @@
           -e DISCORD_OAUTH_REDIRECT_URL \
           -e SESSION_SECRET \
           -e DEFAULT_VOLUME \
+          -e NORMALIZE_LOUDNESS \
+          -e LOUDNESS_TARGET_LUFS \
           -e MAX_QUEUE_SIZE \
           -e IDLE_DISCONNECT_SECONDS \
           -e LOG_LEVEL \
