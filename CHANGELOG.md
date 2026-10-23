@@ -6,6 +6,14 @@
 
 * **web:** derive page titles and favicon from the Discord bot profile
 
+## [0.2.5](https://github.com/krezh/noctune/compare/0.2.4...0.2.5) (2026-10-23)
+
+
+### Features
+
+* **audio:** normalize playback loudness ([a23d09b](https://github.com/krezh/noctune/commit/a23d09b1847451d7fdbd9e71f8a3bec251e30466))
+* **deps:** update dependency yt-dlp (2026.8.19 ➔ 2026.10.21) ([#19](https://github.com/krezh/noctune/issues/19)) ([b72ddc2](https://github.com/krezh/noctune/commit/b72ddc2da68a421de700dff730e1b1d8f58f608b))
+
 ## [0.2.4](https://github.com/krezh/noctune/compare/0.2.3...0.2.4) (2026-10-18)
 
 
