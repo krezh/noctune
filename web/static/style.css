@@ -758,6 +758,7 @@ input[type=range]::-moz-range-thumb {
   opacity: 0.75;
 }
 .history-list li:hover { opacity: 1; }
+.history-list .history-more { justify-content: center; opacity: 1; }
 
 .icon-btn.small {
   width: 1.7rem;

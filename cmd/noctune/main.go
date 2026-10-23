@@ -1,5 +1,5 @@
 // Command noctune runs the Discord bot and its web control panel in one
-// process. Player state is in memory; downloaded audio may be cached on disk.
+// process. Playback history and downloaded audio are cached on disk.
 package main
 
 import (
@@ -58,7 +58,10 @@ func run(ctx context.Context) error {
 	})
 	spClient := spotify.New(ctx, cfg.SpotifyClientID, cfg.SpotifyClientSecret)
 	resolver := resolve.New(spClient, ytClient)
-	players := player.NewManager(client, ytClient, cfg)
+	players, err := player.NewManager(client, ytClient, cfg)
+	if err != nil {
+		return fmt.Errorf("open player history: %w", err)
+	}
 	discordBot := bot.New(cfg, client, players, resolver)
 
 	if err := discordBot.OpenContext(ctx); err != nil {

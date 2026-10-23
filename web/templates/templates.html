@@ -177,23 +177,14 @@
 {{end}}
 
 {{/*
-  panel-inner is only used for the initial full-page render (panel-shell
-  above). SSE updates render panel-media, panel-controls, and panel-queue
-  independently (see handleEvents in api.go) and push each as its own
-  hx-swap-oob fragment, so e.g. queuing a track only touches
-  #queue-section, and clicking a loop-mode or volume control only
-  touches #now-playing-controls — neither tears down and restarts the
-  art, EQ icon, or the running/wavy progress bar in #now-playing-media
-  just because something elsewhere changed. #status-volume and
-  #status-loop are their own even-smaller OOB spans so the "· 68% ·
-  loop queue" text embedded in #now-playing-media's status line still
-  stays correct on a volume- or loop-only change, without that whole
-  block having to re-render for it.
+  panel-inner is only used for the initial full-page render. SSE updates
+  render each section independently so unrelated state changes leave it intact.
 */}}
 {{define "panel-inner"}}
   {{template "panel-media" .}}
   {{template "panel-controls" .}}
   {{template "panel-queue" .}}
+  {{template "panel-history" .}}
 {{end}}
 
 {{define "panel-media"}}
@@ -575,42 +566,20 @@
   <p class="empty" style="margin-top:1rem">Queue is empty.</p>
   {{end}}
 
-  {{if .State.History}}
+</div>
+{{end}}
+
+{{define "panel-history"}}
+<div id="history-container" hx-swap-oob="true">
+  {{if gt .History.Total 0}}
   <details id="history-section" class="history-section">
-    <summary>History ({{len .State.History}})</summary>
+    <summary>History ({{.History.Total}})</summary>
     <ul class="history-list">
-      {{range $t := .State.History}}
-      <li>
-        {{if $t.ArtworkURL}}
-          <img class="queue-thumb" src="{{$t.ArtworkURL}}" alt="">
-        {{else}}
-          <span class="queue-thumb-placeholder"></span>
-        {{end}}
-        <span class="meta">
-          <div class="title">{{if $t.URL}}<a draggable="false" href="{{$t.URL}}" target="_blank" rel="noopener noreferrer">{{$t.Title}}</a>{{else}}{{$t.Title}}{{end}}</div>
-          <div class="artist">{{$t.Artist}}{{template "requested-by" $t}}</div>
-        </span>
-        {{if $t.URL}}
-        <a draggable="false" href="{{$t.URL}}" target="_blank" rel="noopener noreferrer" class="icon-btn small" aria-label="Open track link">{{template "icon-link"}}</a>
-        {{end}}
-        <form hx-post="/g/{{$.GuildID}}/history/requeue">
-          <input type="hidden" name="id" value="{{$t.ID}}">
-          <button type="submit" class="icon-btn small" aria-label="Add to queue">{{template "icon-play"}}</button>
-        </form>
-      </li>
-      {{end}}
+      {{template "history-items" .}}
     </ul>
   </details>
   <script>
   (function () {
-    // Every #queue-section swap replaces this whole <details> node, which
-    // would otherwise reset it to closed on every notify (queue change,
-    // track transition, volume, ...) — right when it's most likely to be
-    // open, since history only grows on a track transition. hx-preserve
-    // isn't usable here: it keeps the entire old node (stale list and
-    // count included), not just the open/closed state. So the open state
-    // is tracked by hand in a page-level flag, the same pattern already
-    // used for __noctuneQueueSeenIds above.
     var details = document.getElementById('history-section');
     if (!details) return;
     if (window.__noctuneHistoryOpen) details.open = true;
@@ -621,4 +590,36 @@
   </script>
   {{end}}
 </div>
+{{end}}
+
+{{define "history-items"}}
+{{range $entry := .History.Entries}}
+{{$t := $entry.Track}}
+<li>
+  {{if $t.ArtworkURL}}
+    <img class="queue-thumb" src="{{$t.ArtworkURL}}" alt="">
+  {{else}}
+    <span class="queue-thumb-placeholder"></span>
+  {{end}}
+  <span class="meta">
+    <div class="title">{{if $t.URL}}<a draggable="false" href="{{$t.URL}}" target="_blank" rel="noopener noreferrer">{{$t.Title}}</a>{{else}}{{$t.Title}}{{end}}</div>
+    <div class="artist">{{$t.Artist}}{{template "requested-by" $t}}</div>
+  </span>
+  {{if $t.URL}}
+  <a draggable="false" href="{{$t.URL}}" target="_blank" rel="noopener noreferrer" class="icon-btn small" aria-label="Open track link">{{template "icon-link"}}</a>
+  {{end}}
+  <form hx-post="/g/{{$.GuildID}}/history/requeue">
+    <input type="hidden" name="id" value="{{$t.ID}}">
+    <button type="submit" class="icon-btn small" aria-label="Add to queue">{{template "icon-play"}}</button>
+  </form>
+</li>
+{{end}}
+{{if .History.NextCursor}}
+<li class="history-more">
+  <button type="button"
+          hx-get="/g/{{.GuildID}}/history?before={{.History.NextCursor}}"
+          hx-target="closest li"
+          hx-swap="outerHTML">Load more</button>
+</li>
+{{end}}
 {{end}}

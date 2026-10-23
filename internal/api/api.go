@@ -46,7 +46,10 @@ import (
 	"github.com/krezh/noctune/web"
 )
 
-const sessionCookie = "noctune_session"
+const (
+	sessionCookie   = "noctune_session"
+	historyPageSize = 50
+)
 
 type GuildView struct {
 	ID   string
@@ -169,6 +172,10 @@ func mediaSectionChanged(prev *player.State, cur player.State) bool {
 		prev.Current != cur.Current
 }
 
+func historySectionChanged(prev *player.State, cur player.State) bool {
+	return prev == nil || prev.HistoryVersion != cur.HistoryVersion
+}
+
 func computeProgress(st player.State) ProgressView {
 	if st.Current == nil || st.Current.Duration <= 0 {
 		return ProgressView{}
@@ -212,6 +219,7 @@ type PanelData struct {
 	Channels []ChannelView
 	State    player.State
 	Progress ProgressView
+	History  player.HistoryPage
 	// ShowChannelPicker is true for sessions with no Discord identity to
 	// resolve a "my channel" from (Trusted WEB_AUTH_TOKEN logins, or no
 	// auth configured at all) — they get the old dropdown-of-any-channel
@@ -412,6 +420,7 @@ func (srv *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /{$}", srv.requireAuth(srv.handleIndex))
 	mux.HandleFunc("GET /g/{guildID}", srv.requireAuth(srv.requireGuildAccess(srv.handleGuildPage)))
 	mux.HandleFunc("GET /g/{guildID}/events", srv.requireAuth(srv.requireGuildAccess(srv.handleEvents)))
+	mux.HandleFunc("GET /g/{guildID}/history", srv.requireAuth(srv.requireGuildAccess(srv.handleHistoryPage)))
 	post("/g/{guildID}/join", srv.requireAuth(srv.requireGuildAccess(srv.handleJoin)))
 	post("/g/{guildID}/leave", srv.requireAuth(srv.requireGuildAccess(srv.requireVoicePresence(srv.handleLeave))))
 	post("/g/{guildID}/play", srv.requireAuth(srv.requireGuildAccess(srv.handlePlay)))
@@ -792,6 +801,18 @@ func (srv *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 			log.Printf("noctune: render sse queue panel: %v", err)
 			return
 		}
+		if historySectionChanged(prev, st) {
+			history, err := gp.History(0, historyPageSize)
+			if err != nil {
+				log.Printf("noctune: query history for SSE: %v", err)
+				return
+			}
+			pd.History = history
+			if err := srv.tmpl.ExecuteTemplate(&buf, "panel-history", pd); err != nil {
+				log.Printf("noctune: render sse history panel: %v", err)
+				return
+			}
+		}
 		for line := range strings.SplitSeq(buf.String(), "\n") {
 			if _, err := fmt.Fprintf(w, "data: %s\n", line); err != nil {
 				return
@@ -1062,6 +1083,27 @@ func (srv *Server) handleQueueReorder(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+func (srv *Server) handleHistoryPage(w http.ResponseWriter, r *http.Request) {
+	before, err := strconv.ParseInt(r.URL.Query().Get("before"), 10, 64)
+	if err != nil || before <= 0 {
+		http.Error(w, "invalid history cursor", http.StatusBadRequest)
+		return
+	}
+	gp, ok := srv.requestPlayer(w, r.PathValue("guildID"))
+	if !ok {
+		return
+	}
+	history, err := gp.History(before, historyPageSize)
+	if err != nil {
+		http.Error(w, "load history", http.StatusInternalServerError)
+		return
+	}
+	srv.render(w, "history-items", PanelData{
+		GuildID: r.PathValue("guildID"),
+		History: history,
+	})
+}
+
 func (srv *Server) handleHistoryRequeue(w http.ResponseWriter, r *http.Request) {
 	gp, ok := srv.requestPlayer(w, r.PathValue("guildID"))
 	if !ok {
@@ -1091,10 +1133,15 @@ func (srv *Server) panelData(guildID string, g discord.Guild, showPicker bool) (
 		return PanelData{}, err
 	}
 	st := gp.Snapshot()
+	history, err := gp.History(0, historyPageSize)
+	if err != nil {
+		return PanelData{}, fmt.Errorf("load history: %w", err)
+	}
 	return PanelData{
 		GuildID:           guildID,
 		Channels:          voiceChannels(srv.client, g.ID),
 		State:             st,
+		History:           history,
 		Progress:          computeProgress(st),
 		ShowChannelPicker: showPicker,
 	}, nil

@@ -5,6 +5,7 @@
 ### Features
 
 * **web:** derive page titles and favicon from the Discord bot profile
+* **player:** persist complete playback history in SQLite with paginated browsing
 
 ## [0.2.5](https://github.com/krezh/noctune/compare/0.2.4...0.2.5) (2026-10-23)
 

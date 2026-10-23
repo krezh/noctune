@@ -83,7 +83,10 @@ func TestQueueSearchAfterCloseReturns(t *testing.T) {
 func TestQueueSearchRejectsFullQueue(t *testing.T) {
 	searchCtx, searchCancel := context.WithCancel(context.Background())
 	defer searchCancel()
-	manager := player.NewManager(nil, nil, &config.Config{})
+	manager, err := player.NewManager(nil, nil, &config.Config{})
+	if err != nil {
+		t.Fatalf("NewManager() error = %v", err)
+	}
 	ch := make(chan searchJob, 64)
 	for range cap(ch) {
 		ch <- searchJob{}
@@ -194,6 +197,18 @@ func TestPlayerSectionChanged(t *testing.T) {
 	}
 }
 
+func TestHistorySectionChanged(t *testing.T) {
+	base := player.State{HistoryVersion: 4}
+	if historySectionChanged(&base, base) {
+		t.Fatal("unchanged history triggered a render")
+	}
+	changed := base
+	changed.HistoryVersion++
+	if !historySectionChanged(&base, changed) {
+		t.Fatal("new history did not trigger a render")
+	}
+}
+
 // go build can't catch a broken html/template — templates are parsed at
 // runtime, not compiled. This exercises every named template with
 // representative data so a bad {{}} fails `go test` instead of a live
@@ -229,7 +244,11 @@ func TestTemplatesParseAndExecute(t *testing.T) {
 			Loop:           player.LoopQueue,
 			Current:        track,
 			Queue:          []*player.Track{track},
-			History:        []*player.Track{{ID: "h1", Title: "Past Track", Artist: "Old Artist"}},
+		},
+		History: player.HistoryPage{
+			Entries:    []player.HistoryEntry{{Sequence: 1, Track: &player.Track{ID: "h1", Title: "Past Track", Artist: "Old Artist"}}},
+			Total:      1,
+			NextCursor: 1,
 		},
 	}
 	loggedInSession := &SessionView{Username: "someone", AvatarURL: "https://example.com/a.png"}
@@ -310,5 +329,14 @@ func TestTemplatesParseAndExecute(t *testing.T) {
 	}
 	if !strings.Contains(queueBuf.String(), `href="https://example.com/track"`) {
 		t.Errorf("panel-queue output missing song link, got: %s", queueBuf.String())
+	}
+
+	var historyBuf strings.Builder
+	if err := tmpl.ExecuteTemplate(&historyBuf, "panel-history", panel); err != nil {
+		t.Fatalf("render panel-history: %v", err)
+	}
+	historyHTML := historyBuf.String()
+	if !strings.Contains(historyHTML, "History (1)") || !strings.Contains(historyHTML, "/g/123/history?before=1") {
+		t.Errorf("panel-history output missing count or pagination link, got: %s", historyHTML)
 	}
 }

@@ -1,7 +1,5 @@
-// Package player owns per-guild playback state: the queue, the currently
-// playing track, and the goroutine that drives one track after another
-// through the audio pipeline. All state lives in memory only — there is
-// no persistence, so a restart simply starts every guild back at idle.
+// Package player owns per-guild playback state and drives tracks through the
+// audio pipeline. Playback history is persisted; active playback state is not.
 package player
 
 import (
@@ -119,24 +117,17 @@ type playbackHandle interface {
 }
 
 type State struct {
-	GuildID        string
-	VoiceChannelID string
-	Status         Status
-	Volume         int
-	Loop           LoopMode
-	Current        *Track
-	Position       time.Duration
-	Queue          []*Track
-	// History is tracks that have started playing, most recent first,
-	// capped at historyMaxSize. It's for display and re-adding a track —
-	// nothing reads it to drive playback.
-	History         []*Track
+	GuildID         string
+	VoiceChannelID  string
+	Status          Status
+	Volume          int
+	Loop            LoopMode
+	Current         *Track
+	Position        time.Duration
+	Queue           []*Track
+	HistoryVersion  uint64
 	LoadingPlaylist bool
 }
-
-// historyMaxSize bounds GuildPlayer.history — like everything else in
-// noctune, it's memory-only and resets on restart.
-const historyMaxSize = 50
 
 type GuildPlayer struct {
 	GuildID string
@@ -151,7 +142,8 @@ type GuildPlayer struct {
 	voiceChannelID   string
 	queue            []*Track
 	current          *Track
-	history          []*Track
+	historyStore     *historyStore
+	historyVersion   uint64
 	status           Status
 	volume           int
 	loop             LoopMode
@@ -175,21 +167,27 @@ type GuildPlayer struct {
 }
 
 type Manager struct {
-	mu       sync.Mutex
-	players  map[string]*GuildPlayer
-	client   *bot.Client
-	resolver StreamResolver
-	cfg      *config.Config
-	closed   bool
+	mu           sync.Mutex
+	players      map[string]*GuildPlayer
+	client       *bot.Client
+	resolver     StreamResolver
+	cfg          *config.Config
+	historyStore *historyStore
+	closed       bool
 }
 
-func NewManager(client *bot.Client, resolver StreamResolver, cfg *config.Config) *Manager {
-	return &Manager{
-		players:  make(map[string]*GuildPlayer),
-		client:   client,
-		resolver: resolver,
-		cfg:      cfg,
+func NewManager(client *bot.Client, resolver StreamResolver, cfg *config.Config) (*Manager, error) {
+	historyStore, err := openHistoryStore(cfg.CacheDir)
+	if err != nil {
+		return nil, err
 	}
+	return &Manager{
+		players:      make(map[string]*GuildPlayer),
+		client:       client,
+		resolver:     resolver,
+		cfg:          cfg,
+		historyStore: historyStore,
+	}, nil
 }
 
 var errManagerClosed = errors.New("player manager is closed")
@@ -214,6 +212,7 @@ func (m *Manager) Get(guildID string) (*GuildPlayer, error) {
 		volume:           m.cfg.DefaultVolume,
 		loop:             LoopOff,
 		status:           StatusIdle,
+		historyStore:     m.historyStore,
 		subs:             make(map[chan State]struct{}),
 		playSignal:       make(chan struct{}, 1),
 		stopLoopCh:       make(chan struct{}),
@@ -237,11 +236,14 @@ func (m *Manager) Close(ctx context.Context) error {
 	}
 	m.mu.Unlock()
 
-	errs := make([]error, 0, len(players))
+	errs := make([]error, 0, len(players)+1)
 	for _, gp := range players {
 		if err := gp.close(ctx); err != nil {
 			errs = append(errs, fmt.Errorf("close guild %s player: %w", gp.GuildID, err))
 		}
+	}
+	if err := m.historyStore.close(); err != nil {
+		errs = append(errs, fmt.Errorf("close history database: %w", err))
 	}
 	return errors.Join(errs...)
 }
@@ -443,21 +445,26 @@ func (gp *GuildPlayer) enqueueLocked(track *Track) error {
 	return nil
 }
 
-// Requeue finds historyID in history and enqueues a fresh copy of it —
-// a new Track (and so a new ID) attributed to requestedBy, since the
-// original's ID and requester belong to when it first played.
-func (gp *GuildPlayer) Requeue(historyID, requestedBy, requestedByAvatarURL string) error {
-	gp.mu.Lock()
-	var src *Track
-	for _, t := range gp.history {
-		if t.ID == historyID {
-			src = t
-			break
-		}
+func (gp *GuildPlayer) addHistory(track *Track) {
+	if err := gp.historyStore.append(gp.GuildID, track); err != nil {
+		log.Printf("noctune: persist history for guild %s: %v", gp.GuildID, err)
+		return
 	}
+	gp.mu.Lock()
+	gp.historyVersion++
 	gp.mu.Unlock()
-	if src == nil {
-		return fmt.Errorf("track not found in history")
+}
+
+// History returns one newest-first page of this guild's persisted playback history.
+func (gp *GuildPlayer) History(before int64, limit int) (HistoryPage, error) {
+	return gp.historyStore.page(gp.GuildID, before, limit)
+}
+
+// Requeue enqueues a fresh copy of a persisted track for the new requester.
+func (gp *GuildPlayer) Requeue(historyID, requestedBy, requestedByAvatarURL string) error {
+	src, err := gp.historyStore.find(gp.GuildID, historyID)
+	if err != nil {
+		return err
 	}
 	track := NewTrack(src.Title, src.Artist, src.Album, src.ArtworkURL, src.WatchURL, src.SourceURL, src.Duration, src.Source, requestedBy, requestedByAvatarURL)
 	return gp.Enqueue(track)
@@ -712,8 +719,7 @@ func (gp *GuildPlayer) Snapshot() State {
 	defer gp.mu.Unlock()
 	q := make([]*Track, len(gp.queue))
 	copy(q, gp.queue)
-	h := make([]*Track, len(gp.history))
-	copy(h, gp.history)
+
 	var pos time.Duration
 	if gp.handle != nil {
 		pos = gp.handle.Position()
@@ -727,7 +733,7 @@ func (gp *GuildPlayer) Snapshot() State {
 		Current:         gp.current,
 		Position:        pos,
 		Queue:           q,
-		History:         h,
+		HistoryVersion:  gp.historyVersion,
 		LoadingPlaylist: gp.loadingPlaylist,
 	}
 }
@@ -867,11 +873,8 @@ func (gp *GuildPlayer) playbackLoop() {
 		gp.handle = handle
 		currentVolume := gp.volume
 		gp.status = StatusPlaying
-		gp.history = append([]*Track{track}, gp.history...)
-		if len(gp.history) > historyMaxSize {
-			gp.history = gp.history[:historyMaxSize]
-		}
 		gp.mu.Unlock()
+		gp.addHistory(track)
 		if currentVolume != volume {
 			if err := handle.SetVolume(currentVolume); err != nil {
 				log.Printf("noctune: apply current volume for %q: %v", track.Title, err)

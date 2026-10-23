@@ -1,7 +1,5 @@
 // Package config loads noctune's runtime configuration from environment
-// variables. There is no config file and no persisted state — every
-// setting is provided at process start, which is what keeps the bot
-// stateless and container-friendly.
+// variables. There is no config file; settings are provided at process start.
 package config
 
 import (
@@ -55,8 +53,8 @@ type Config struct {
 	FFmpegPath            string `env:"FFMPEG_PATH" envDefault:"ffmpeg"`
 	YtDlpPath             string `env:"YTDLP_PATH" envDefault:"yt-dlp"`
 	MaxYtDlpProcesses     int    `env:"MAX_YTDLP_PROCESSES" envDefault:"8"`
-	// CacheDir stores downloaded audio. CacheMaxBytes bounds its total
-	// retained size; zero disables caching.
+	// CacheDir stores playback history and downloaded audio. CacheMaxBytes
+	// bounds only retained audio; zero disables audio caching.
 	CacheDir            string `env:"CACHE_DIR" envDefault:"/tmp/noctune-cache"`
 	CacheMaxBytes       int64  `env:"CACHE_MAX_BYTES" envDefault:"1073741824"`
 	AvatarCacheMaxBytes int64  `env:"AVATAR_CACHE_MAX_BYTES" envDefault:"16777216"`
