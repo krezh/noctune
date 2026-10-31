@@ -9,7 +9,7 @@ require (
 	github.com/thomas-vilte/dave-go v0.5.1
 	github.com/zmb3/spotify/v2 v2.4.3
 	golang.org/x/oauth2 v0.37.0
-	modernc.org/sqlite v1.61.0
+	modernc.org/sqlite v1.61.1
 )
 
 require (
