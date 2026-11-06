@@ -1127,7 +1127,7 @@ func (srv *Server) render(w http.ResponseWriter, name string, data any) {
 	}
 }
 
-func (srv *Server) panelData(guildID string, g discord.Guild, showPicker bool) (PanelData, error) {
+func (srv *Server) panelData(guildID string, g discord.CacheGuild, showPicker bool) (PanelData, error) {
 	gp, err := srv.players.Get(guildID)
 	if err != nil {
 		return PanelData{}, err
@@ -1160,7 +1160,7 @@ func (srv *Server) listGuilds() []GuildView {
 	return guilds
 }
 
-func guildView(g discord.Guild) GuildView {
+func guildView(g discord.CacheGuild) GuildView {
 	gv := GuildView{ID: g.ID.String(), Name: g.Name, Initials: guildInitials(g.Name)}
 	if g.Icon != nil {
 		gv.Icon = fmt.Sprintf("https://cdn.discordapp.com/icons/%s/%s.png", g.ID, *g.Icon)
