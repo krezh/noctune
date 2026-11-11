@@ -7,6 +7,20 @@
 * **web:** derive page titles and favicon from the Discord bot profile
 * **player:** persist complete playback history in SQLite with paginated browsing
 
+## [0.3.0](https://github.com/krezh/noctune/compare/0.2.7...0.3.0) (2026-11-09)
+
+
+### ⚠ BREAKING CHANGES
+
+* **deps:** Update module golang.org/x/oauth2 (v0.37.0 ➔ v0.38.0) ([#31](https://github.com/krezh/noctune/issues/31))
+* **deps:** Update module github.com/disgoorg/disgo (v0.19.6 ➔ v0.20.0) ([#28](https://github.com/krezh/noctune/issues/28))
+
+### Features
+
+* **deps:** Update module github.com/disgoorg/disgo (v0.19.6 ➔ v0.20.0) ([#28](https://github.com/krezh/noctune/issues/28)) ([89a3307](https://github.com/krezh/noctune/commit/89a3307a63355c866cd41f76ba2e0be8df94a829))
+* **deps:** Update module golang.org/x/oauth2 (v0.37.0 ➔ v0.38.0) ([#31](https://github.com/krezh/noctune/issues/31)) ([fc27af5](https://github.com/krezh/noctune/commit/fc27af5ab145b08a9dd1c3a15b43352a641d1bb7))
+* **deps:** update module modernc.org/sqlite (v1.61.1 ➔ v1.62.0) ([#30](https://github.com/krezh/noctune/issues/30)) ([157e6dc](https://github.com/krezh/noctune/commit/157e6dc295292e25d20d37dcb61f780ba57af8d9))
+
 ## [0.2.7](https://github.com/krezh/noctune/compare/0.2.6...0.2.7) (2026-11-03)
 
 
