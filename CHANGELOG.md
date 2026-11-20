@@ -7,6 +7,14 @@
 * **web:** derive page titles and favicon from the Discord bot profile
 * **player:** persist complete playback history in SQLite with paginated browsing
 
+## [0.3.1](https://github.com/krezh/noctune/compare/0.3.0...0.3.1) (2026-11-20)
+
+
+### Features
+
+* **player:** persist queue and playback state across restarts ([7577269](https://github.com/krezh/noctune/commit/7577269cbb53d4900cfe7cb2117c5353d7316987))
+* **queue:** fair round-robin queueing and play next ([ca4bbae](https://github.com/krezh/noctune/commit/ca4bbaec66c10912ff5e11b1715bdf0367a0764d))
+
 ## [0.3.0](https://github.com/krezh/noctune/compare/0.2.7...0.3.0) (2026-11-09)
 
 
