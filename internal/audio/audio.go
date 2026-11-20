@@ -69,6 +69,8 @@ type Options struct {
 	// tracks from clipping.
 	Normalize      bool
 	LoudnessTarget float64
+	// StartAt skips this far into the track before playback begins.
+	StartAt time.Duration
 }
 
 // Handle controls one in-flight track and implements voice.OpusFrameProvider.
@@ -179,7 +181,13 @@ func Play(stream io.ReadCloser, opts Options) (*Handle, error) {
 		"-re",
 		"-readrate_initial_burst", strconv.Itoa(burst),
 		"-readrate_catchup", "3",
-		"-thread_queue_size", "4096", "-i", "pipe:0",
+		"-thread_queue_size", "4096",
+	}
+	if opts.StartAt > 0 {
+		args = append(args, "-ss", strconv.FormatFloat(opts.StartAt.Seconds(), 'f', 3, 64))
+	}
+	args = append(args,
+		"-i", "pipe:0",
 		"-map", "0:a",
 		"-acodec", "libopus",
 		"-f", "ogg",
@@ -194,7 +202,7 @@ func Play(stream io.ReadCloser, opts Options) (*Handle, error) {
 		"-loglevel", "warning",
 		"-af", afChain,
 		"pipe:1",
-	}
+	)
 
 	cmd := exec.Command(ffmpegPath, args...)
 	cmd.Stdin = stream
@@ -226,6 +234,7 @@ func Play(stream io.ReadCloser, opts Options) (*Handle, error) {
 		frames:      make(chan []byte, frameBufferSize),
 		stderrDone:  make(chan struct{}),
 	}
+	h.position.Store(int64(opts.StartAt))
 	log.Printf("audio: encode session started")
 	go h.readStderr(stderr)
 	go h.readLoop()

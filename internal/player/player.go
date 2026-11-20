@@ -62,6 +62,8 @@ type Track struct {
 	Source               Source
 	RequestedBy          string
 	RequestedByAvatarURL string
+
+	startAt time.Duration
 }
 
 func NewTrack(title, artist, album, artworkURL, watchURL, sourceURL string, duration time.Duration, source Source, requestedBy, requestedByAvatarURL string) *Track {
@@ -156,9 +158,17 @@ type GuildPlayer struct {
 	resolutionCancel map[uint64]context.CancelFunc
 	idleTimer        *time.Timer
 	subs             map[chan State]struct{}
-	loadingPlaylist  bool
+	loadingCount     int
+	loads            map[uint64]*LoadSpec
+	loadSeq          uint64
+	restoredLoads    []LoadSpec
+	restoreChannelID string
 	closed           bool
 	loopStarted      bool
+
+	persistMu     sync.Mutex
+	persistFrozen bool
+	saveCh        chan struct{}
 
 	startOnce    sync.Once
 	stopLoopOnce sync.Once
@@ -174,6 +184,7 @@ type Manager struct {
 	resolver     StreamResolver
 	cfg          *config.Config
 	historyStore *historyStore
+	saved        map[string]savedGuild
 	closed       bool
 }
 
@@ -182,12 +193,18 @@ func NewManager(client *bot.Client, resolver StreamResolver, cfg *config.Config)
 	if err != nil {
 		return nil, err
 	}
+	saved, err := historyStore.loadGuilds()
+	if err != nil {
+		_ = historyStore.close()
+		return nil, err
+	}
 	return &Manager{
 		players:      make(map[string]*GuildPlayer),
 		client:       client,
 		resolver:     resolver,
 		cfg:          cfg,
 		historyStore: historyStore,
+		saved:        saved,
 	}, nil
 }
 
@@ -219,7 +236,13 @@ func (m *Manager) Get(guildID string) (*GuildPlayer, error) {
 		stopLoopCh:       make(chan struct{}),
 		loopDone:         make(chan struct{}),
 		resolutionCancel: make(map[uint64]context.CancelFunc),
+		saveCh:           make(chan struct{}, 1),
 	}
+	if s, ok := m.saved[guildID]; ok {
+		gp.restore(s)
+		delete(m.saved, guildID)
+	}
+	go gp.persistLoop()
 	m.players[guildID] = gp
 	return gp, nil
 }
@@ -290,6 +313,7 @@ func (gp *GuildPlayer) Join(ctx context.Context, channelID string) error {
 	oldConn := gp.voiceConn
 	gp.voiceConn = conn
 	gp.voiceChannelID = channelID
+	gp.restoreChannelID = ""
 	gp.startOnce.Do(func() {
 		gp.loopStarted = true
 		go gp.playbackLoop()
@@ -328,9 +352,11 @@ func (gp *GuildPlayer) leave(ctx context.Context) error {
 	conn := gp.voiceConn
 	gp.voiceConn = nil
 	gp.voiceChannelID = ""
+	gp.restoreChannelID = ""
 	gp.queue = nil
 	gp.current = nil
 	gp.status = StatusIdle
+	gp.clearLoadsLocked()
 	gp.mu.Unlock()
 
 	for _, cancel := range resolutionCancels {
@@ -350,6 +376,7 @@ func (gp *GuildPlayer) leave(ctx context.Context) error {
 }
 
 func (gp *GuildPlayer) close(ctx context.Context) error {
+	gp.freeze()
 	gp.mu.Lock()
 	gp.closed = true
 	if gp.idleTimer != nil {
@@ -400,61 +427,6 @@ func closeVoiceConnection(conn voiceConnection) {
 func (gp *GuildPlayer) Enqueue(track *Track) error {
 	gp.mu.Lock()
 	err := gp.enqueueLocked(track)
-	gp.mu.Unlock()
-	if err != nil {
-		return err
-	}
-	gp.notify()
-
-	select {
-	case gp.playSignal <- struct{}{}:
-	default:
-	}
-	return nil
-}
-
-// EnqueueResolved enqueues a resolver result only if Stop or Leave has not
-// invalidated the resolution since it began.
-func (gp *GuildPlayer) EnqueueResolved(track *Track, generation uint64) error {
-	gp.mu.Lock()
-	if generation != gp.resolutionGen {
-		gp.mu.Unlock()
-		return context.Canceled
-	}
-	err := gp.enqueueLocked(track)
-	gp.mu.Unlock()
-	if err != nil {
-		return err
-	}
-	gp.notify()
-
-	select {
-	case gp.playSignal <- struct{}{}:
-	default:
-	}
-	return nil
-}
-
-// EnqueueResolvedNext is EnqueueResolved, but places track at the front of
-// the queue, or right after afterID if that track is still queued, so a
-// streamed playlist keeps its order.
-func (gp *GuildPlayer) EnqueueResolvedNext(track *Track, generation uint64, afterID string) error {
-	gp.mu.Lock()
-	if generation != gp.resolutionGen {
-		gp.mu.Unlock()
-		return context.Canceled
-	}
-	err := gp.checkCapacityLocked()
-	if err == nil {
-		idx := 0
-		for i, t := range gp.queue {
-			if afterID != "" && t.ID == afterID {
-				idx = i + 1
-				break
-			}
-		}
-		gp.queue = slices.Insert(gp.queue, idx, track)
-	}
 	gp.mu.Unlock()
 	if err != nil {
 		return err
@@ -647,6 +619,7 @@ func (gp *GuildPlayer) Stop() error {
 	resolutionCancels := gp.invalidateResolutionsLocked()
 	gp.queue = nil
 	gp.loop = LoopOff
+	gp.clearLoadsLocked()
 	gp.mu.Unlock()
 	for _, cancel := range resolutionCancels {
 		cancel()
@@ -814,17 +787,8 @@ func (gp *GuildPlayer) Snapshot() State {
 		Position:        pos,
 		Queue:           q,
 		HistoryVersion:  gp.historyVersion,
-		LoadingPlaylist: gp.loadingPlaylist,
+		LoadingPlaylist: gp.loadingCount > 0,
 	}
-}
-
-// SetLoadingPlaylist marks whether a playlist is actively being resolved
-// and streamed into the queue. Callers must call it with false when done.
-func (gp *GuildPlayer) SetLoadingPlaylist(loading bool) {
-	gp.mu.Lock()
-	gp.loadingPlaylist = loading
-	gp.mu.Unlock()
-	gp.notify()
 }
 
 // Subscribe returns a channel that receives the latest state snapshot
@@ -860,6 +824,10 @@ func (gp *GuildPlayer) notify() {
 			}
 			ch <- snap
 		}
+	}
+	select {
+	case gp.saveCh <- struct{}{}:
+	default:
 	}
 }
 
@@ -910,6 +878,8 @@ func (gp *GuildPlayer) playbackLoop() {
 		}
 		track := gp.queue[0]
 		gp.queue = gp.queue[1:]
+		startAt := track.startAt
+		track.startAt = 0
 		gp.current = track
 		gp.status = StatusLoading
 		trackCtx, trackCancel := context.WithCancel(context.Background())
@@ -936,6 +906,7 @@ func (gp *GuildPlayer) playbackLoop() {
 			FFmpegPath:     gp.cfg.FFmpegPath,
 			Normalize:      gp.cfg.NormalizeLoudness,
 			LoudnessTarget: gp.cfg.LoudnessTargetLUFS,
+			StartAt:        startAt,
 		})
 		if err != nil {
 			trackCancel()
@@ -954,7 +925,9 @@ func (gp *GuildPlayer) playbackLoop() {
 		currentVolume := gp.volume
 		gp.status = StatusPlaying
 		gp.mu.Unlock()
-		gp.addHistory(track)
+		if startAt == 0 {
+			gp.addHistory(track)
+		}
 		if currentVolume != volume {
 			if err := handle.SetVolume(currentVolume); err != nil {
 				log.Printf("noctune: apply current volume for %q: %v", track.Title, err)

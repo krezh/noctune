@@ -84,6 +84,11 @@ func (s *historyStore) initialize() error {
 		) STRICT`,
 		`CREATE INDEX IF NOT EXISTS playback_history_guild_sequence
 			ON playback_history (guild_id, sequence DESC)`,
+		`CREATE TABLE IF NOT EXISTS guild_state (
+			guild_id TEXT PRIMARY KEY,
+			state TEXT NOT NULL,
+			updated_at_ms INTEGER NOT NULL
+		) STRICT`,
 	}
 	for _, statement := range statements {
 		if _, err := s.db.Exec(statement); err != nil {

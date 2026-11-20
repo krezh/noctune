@@ -67,7 +67,7 @@ func NewClient(cfg *config.Config) (*bot.Client, error) {
 			voice.WithDaveSessionCreateFunc(session.CreateFunc()),
 		),
 		bot.WithCacheConfigOpts(
-			cache.WithCaches(cache.FlagGuilds, cache.FlagChannels, cache.FlagVoiceStates),
+			cache.WithCaches(cache.FlagGuilds, cache.FlagChannels, cache.FlagVoiceStates, cache.FlagMembers),
 		),
 	)
 	if err != nil {
@@ -93,6 +93,7 @@ func New(cfg *config.Config, client *bot.Client, players *player.Manager, resolv
 	}
 	client.EventManager.AddEventListeners(&events.ListenerAdapter{
 		OnReady:                         b.onReady,
+		OnGuildReady:                    b.onGuildReady,
 		OnApplicationCommandInteraction: b.onInteraction,
 	})
 	b.watchWG.Add(2)
@@ -154,6 +155,55 @@ func (b *Bot) onReady(event *events.Ready) {
 	if err != nil {
 		log.Printf("noctune: register slash commands: %v", err)
 	}
+}
+
+// onGuildReady picks up a guild's playback from before the last restart:
+// it rejoins the saved voice channel if anyone is still listening there,
+// and continues any searches or playlists that were still loading.
+func (b *Bot) onGuildReady(event *events.GuildReady) {
+	guildID := event.GuildID.String()
+	gp, err := b.players.Get(guildID)
+	if err != nil {
+		return
+	}
+	channelID := gp.TakeRestoreChannel()
+	loads := gp.BeginRestoredLoads(context.Background())
+	if channelID == "" && len(loads) == 0 {
+		return
+	}
+	join := channelID != "" && b.hasListeners(event.GuildID, channelID)
+	go func() {
+		if join {
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			err := gp.Join(ctx, channelID)
+			cancel()
+			if err != nil {
+				log.Printf("noctune: rejoin voice channel in guild %s: %v", guildID, err)
+			} else {
+				log.Printf("noctune: resumed playback in guild %s", guildID)
+				go b.watchGuild(guildID)
+			}
+		}
+		for _, l := range loads {
+			if err := b.resolver.Run(l).Err; err != nil && !errors.Is(err, context.Canceled) {
+				log.Printf("noctune: resume loading %q: %v", l.Spec().Query, err)
+			}
+		}
+	}()
+}
+
+func (b *Bot) hasListeners(guildID snowflake.ID, channelID string) bool {
+	self := b.Client.ID()
+	for vs := range b.Client.Caches.VoiceStates(guildID) {
+		if vs.ChannelID == nil || vs.ChannelID.String() != channelID || vs.UserID == self {
+			continue
+		}
+		if m, ok := b.Client.Caches.Member(guildID, vs.UserID); ok && m.User.Bot {
+			continue
+		}
+		return true
+	}
+	return false
 }
 
 func (b *Bot) onInteraction(event *events.ApplicationCommandInteractionCreate) {
@@ -263,37 +313,19 @@ func (b *Bot) handlePlay(event *events.ApplicationCommandInteractionCreate, guil
 		if u := event.User().AvatarURL(); u != nil {
 			avatarURL = *u
 		}
-		var (
-			first      *player.Track
-			lastID     string
-			trackCount int
-			enqueueErr error
-		)
-		generation := gp.ResolutionGeneration()
-		resolveCtx, finishResolve, ok := gp.BeginResolution(context.Background(), generation)
+		l, ok := gp.BeginLoad(context.Background(), gp.ResolutionGeneration(), player.LoadSpec{
+			Query:                query,
+			RequestedBy:          event.User().Username,
+			RequestedByAvatarURL: avatarURL,
+			PlayNext:             playNext,
+			Multi:                resolve.IsMultiTrack(query),
+		})
 		if !ok {
 			b.followup(event, "Playback was stopped before the search started.")
 			return
 		}
-		defer finishResolve()
-		resolveErr := b.resolver.ResolveEach(resolveCtx, query, event.User().Username, avatarURL, func(t *player.Track) error {
-			if first == nil {
-				first = t
-			}
-			var err error
-			if playNext {
-				err = gp.EnqueueResolvedNext(t, generation, lastID)
-			} else {
-				err = gp.EnqueueResolved(t, generation)
-			}
-			if err != nil {
-				enqueueErr = err
-				return err
-			}
-			lastID = t.ID
-			trackCount++
-			return nil
-		})
+		res := b.resolver.Run(l)
+		first, trackCount, enqueueErr, resolveErr := res.First, res.Count, res.EnqueueErr, res.Err
 		if errors.Is(resolveErr, context.Canceled) {
 			b.followup(event, "Search canceled.")
 			return

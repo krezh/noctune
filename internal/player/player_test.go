@@ -541,18 +541,115 @@ func TestEnqueueSingleRequesterAppends(t *testing.T) {
 	}
 }
 
-func TestEnqueueResolvedNextKeepsOrder(t *testing.T) {
+func TestPlayNextLoadKeepsOrder(t *testing.T) {
 	gp := newQueueTestPlayer(nil, &Track{ID: "x", Title: "X"})
-	last := ""
-	for _, title := range []string{"N1", "N2", "N3"} {
-		if err := gp.EnqueueResolvedNext(&Track{ID: title, Title: title}, 0, last); err != nil {
+	l, ok := gp.BeginLoad(context.Background(), gp.ResolutionGeneration(), LoadSpec{Query: "list", PlayNext: true, Multi: true})
+	if !ok {
+		t.Fatal("BeginLoad rejected current generation")
+	}
+	for i, title := range []string{"N1", "N2", "N3"} {
+		if err := l.Add(&Track{ID: title, Title: title}, i); err != nil {
 			t.Fatal(err)
 		}
-		last = title
 	}
+	if !gp.Snapshot().LoadingPlaylist {
+		t.Fatal("LoadingPlaylist = false during a playlist load")
+	}
+	l.Finish(nil)
 	want := []string{"N1", "N2", "N3", "X"}
 	if got := queueTitles(gp.queue); !slices.Equal(got, want) {
 		t.Fatalf("queue = %v, want %v", got, want)
+	}
+	if gp.Snapshot().LoadingPlaylist || len(gp.loads) != 0 || len(gp.restoredLoads) != 0 {
+		t.Fatal("finished load is still tracked")
+	}
+}
+
+func TestCanceledLoadIsKeptUnlessStopped(t *testing.T) {
+	gp := newQueueTestPlayer(nil)
+	gp.resolutionCancel = make(map[uint64]context.CancelFunc)
+	l, _ := gp.BeginLoad(context.Background(), gp.ResolutionGeneration(), LoadSpec{Query: "list", Multi: true})
+	if err := l.Add(&Track{ID: "a", Title: "a"}, 0); err != nil {
+		t.Fatal(err)
+	}
+	l.Finish(context.Canceled)
+	if len(gp.restoredLoads) != 1 || gp.restoredLoads[0].Progress != 1 {
+		t.Fatalf("restoredLoads = %+v, want one load with progress 1", gp.restoredLoads)
+	}
+
+	l, _ = gp.BeginLoad(context.Background(), gp.ResolutionGeneration(), LoadSpec{Query: "other"})
+	_ = gp.Stop()
+	l.Finish(context.Canceled)
+	if len(gp.restoredLoads) != 0 || len(gp.loads) != 0 {
+		t.Fatal("Stop did not discard loads")
+	}
+}
+
+type positionHandle struct {
+	blockingPlaybackHandle
+	pos time.Duration
+}
+
+func (h *positionHandle) Position() time.Duration { return h.pos }
+
+func TestShutdownStateIsRestored(t *testing.T) {
+	store, err := openHistoryStore("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.close() }()
+
+	gp := newQueueTestPlayer(&Track{ID: "t900", Title: "cur", Duration: 3 * time.Minute},
+		&Track{ID: "t901", Title: "q1"}, &Track{ID: "t902", Title: "q2"})
+	gp.GuildID = "g"
+	gp.historyStore = store
+	gp.handle = &positionHandle{pos: 42 * time.Second}
+	gp.voiceChannelID = "chan"
+	gp.volume = 35
+	gp.loop = LoopQueue
+	gp.restoredLoads = []LoadSpec{{Query: "list", Progress: 7}}
+
+	gp.freeze()
+	gp.queue = nil
+	gp.persist()
+
+	saved, err := store.loadGuilds()
+	if err != nil {
+		t.Fatal(err)
+	}
+	restored := newQueueTestPlayer(nil)
+	restored.restore(saved["g"])
+
+	want := []string{"cur", "q1", "q2"}
+	if got := queueTitles(restored.queue); !slices.Equal(got, want) {
+		t.Fatalf("queue = %v, want %v", got, want)
+	}
+	if restored.queue[0].startAt != 42*time.Second {
+		t.Fatalf("startAt = %v, want 42s", restored.queue[0].startAt)
+	}
+	if restored.volume != 35 || restored.loop != LoopQueue {
+		t.Fatalf("volume/loop = %d/%s, want 35/queue", restored.volume, restored.loop)
+	}
+	if ch := restored.TakeRestoreChannel(); ch != "chan" {
+		t.Fatalf("TakeRestoreChannel() = %q, want chan", ch)
+	}
+	if len(restored.restoredLoads) != 1 || restored.restoredLoads[0].Progress != 7 {
+		t.Fatalf("restoredLoads = %+v", restored.restoredLoads)
+	}
+	if n := trackIDCounter.Load(); n < 902 {
+		t.Fatalf("track ID counter = %d, want >= 902", n)
+	}
+}
+
+func TestRestoreDropsNearlyFinishedTrack(t *testing.T) {
+	gp := newQueueTestPlayer(nil)
+	gp.restore(savedGuild{
+		Current:  &Track{Title: "cur", Duration: time.Minute},
+		Position: 59 * time.Second,
+		Queue:    []*Track{{Title: "q1"}},
+	})
+	if got := queueTitles(gp.queue); !slices.Equal(got, []string{"q1"}) {
+		t.Fatalf("queue = %v, want [q1]", got)
 	}
 }
 

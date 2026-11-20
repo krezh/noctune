@@ -164,8 +164,9 @@ func IsPlaylistURL(input string) bool {
 // ResolvePlaylistEach calls fn for each video in a YouTube playlist URL as
 // yt-dlp outputs it, rather than buffering all results first. fn is called
 // from the same goroutine in order; return from ResolvePlaylistEach means
-// all entries have been delivered (or an error aborted the run).
-func (c *Client) ResolvePlaylistEach(ctx context.Context, playlistURL string, fn func(*Result) error) error {
+// all entries have been delivered (or an error aborted the run). The first
+// skip entries are left out; fn gets each entry's 0-based playlist index.
+func (c *Client) ResolvePlaylistEach(ctx context.Context, playlistURL string, skip int, fn func(*Result, int) error) error {
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 	release, err := c.acquireProcess(ctx)
@@ -174,13 +175,11 @@ func (c *Client) ResolvePlaylistEach(ctx context.Context, playlistURL string, fn
 	}
 	defer release()
 
-	cmd := exec.CommandContext(ctx, c.ytDlpPath,
-		"-j",
-		"--flat-playlist",
-		"--no-warnings",
-		"--skip-download",
-		playlistURL,
-	)
+	args := []string{"-j", "--flat-playlist", "--no-warnings", "--skip-download"}
+	if skip > 0 {
+		args = append(args, "--playlist-items", fmt.Sprintf("%d:", skip+1))
+	}
+	cmd := exec.CommandContext(ctx, c.ytDlpPath, append(args, playlistURL)...)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return fmt.Errorf("yt-dlp stdout pipe: %w", err)
@@ -193,16 +192,18 @@ func (c *Client) ResolvePlaylistEach(ctx context.Context, playlistURL string, fn
 
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 1<<20), 1<<20)
+	index := skip
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" {
 			continue
 		}
+		index++
 		var entry ytDlpEntry
 		if err := json.Unmarshal([]byte(line), &entry); err != nil {
 			continue
 		}
-		if err := fn(entry.toResult()); err != nil {
+		if err := fn(entry.toResult(), index-1); err != nil {
 			_ = cmd.Process.Kill()
 			_ = cmd.Wait()
 			return err
@@ -227,7 +228,7 @@ func (c *Client) ResolvePlaylistEach(ctx context.Context, playlistURL string, fn
 // streaming results as they arrive, use ResolvePlaylistEach instead.
 func (c *Client) ResolvePlaylist(ctx context.Context, playlistURL string) ([]*Result, error) {
 	var out []*Result
-	if err := c.ResolvePlaylistEach(ctx, playlistURL, func(r *Result) error {
+	if err := c.ResolvePlaylistEach(ctx, playlistURL, 0, func(r *Result, _ int) error {
 		out = append(out, r)
 		return nil
 	}); err != nil {

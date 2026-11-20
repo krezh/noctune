@@ -346,22 +346,16 @@ func (srv *Server) runSearchWorker(guildID string, ch <-chan searchJob) {
 		case <-srv.searchCtx.Done():
 			return
 		}
-		ctx, finish, ok := gp.BeginResolution(srv.searchCtx, job.generation)
+		l, ok := gp.BeginLoad(srv.searchCtx, job.generation, player.LoadSpec{
+			Query:                job.query,
+			RequestedBy:          job.requestedBy,
+			RequestedByAvatarURL: job.requestedByAvatarURL,
+			Multi:                resolve.IsMultiTrack(job.query),
+		})
 		if !ok {
 			continue
 		}
-		isMulti := resolve.IsMultiTrack(job.query)
-		if isMulti {
-			gp.SetLoadingPlaylist(true)
-		}
-		err := srv.resolver.ResolveEach(ctx, job.query, job.requestedBy, job.requestedByAvatarURL, func(t *player.Track) error {
-			return gp.EnqueueResolved(t, job.generation)
-		})
-		finish()
-		if isMulti {
-			gp.SetLoadingPlaylist(false)
-		}
-		if err != nil && !errors.Is(err, context.Canceled) {
+		if err := srv.resolver.Run(l).Err; err != nil && !errors.Is(err, context.Canceled) {
 			log.Printf("noctune: web resolve %q: %v", job.query, err)
 		}
 	}

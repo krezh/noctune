@@ -134,19 +134,48 @@ func IsMultiTrack(query string) bool {
 	return ok && (kind == spotify.KindAlbum || kind == spotify.KindPlaylist)
 }
 
-// ResolveEach calls fn for each resolved track as soon as it's available.
+// LoadResult summarizes a Run.
+type LoadResult struct {
+	First      *player.Track
+	Count      int
+	EnqueueErr error
+	Err        error
+}
+
+// Run resolves a registered load into the player's queue, continuing after
+// any entries a previous run already queued, then finishes it.
+func (r *Resolver) Run(l *player.Load) LoadResult {
+	spec := l.Spec()
+	var res LoadResult
+	res.Err = r.ResolveEach(l.Context(), spec.Query, spec.RequestedBy, spec.RequestedByAvatarURL, spec.Progress, func(t *player.Track, index int) error {
+		if res.First == nil {
+			res.First = t
+		}
+		if err := l.Add(t, index); err != nil {
+			res.EnqueueErr = err
+			return err
+		}
+		res.Count++
+		return nil
+	})
+	l.Finish(res.Err)
+	return res
+}
+
+// ResolveEach calls fn for each resolved track as soon as it's available,
+// with the track's index in its source, starting at index skip.
 // For YouTube playlists this streams one entry per yt-dlp output line; for
 // Spotify albums/playlists it resolves metadata first then finds YouTube
 // audio serially; everything else resolves fully then calls fn once.
-func (r *Resolver) ResolveEach(ctx context.Context, query, requestedBy, requestedByAvatarURL string, fn func(*player.Track) error) error {
+func (r *Resolver) ResolveEach(ctx context.Context, query, requestedBy, requestedByAvatarURL string, skip int, fn func(*player.Track, int) error) error {
 	query = strings.TrimSpace(query)
 	if query == "" {
 		return fmt.Errorf("empty query")
 	}
 
 	if youtube.IsURL(query) && youtube.IsPlaylistURL(query) {
-		return r.youtube.ResolvePlaylistEach(ctx, query, func(res *youtube.Result) error {
-			return fn(youtubeToPlayerTrack(res, requestedBy, requestedByAvatarURL))
+		return r.youtube.ResolvePlaylistEach(ctx, query, skip, func(res *youtube.Result, index int) error {
+			return fn(youtubeToPlayerTrack(res, requestedBy, requestedByAvatarURL), index)
 		})
 	}
 
@@ -163,7 +192,8 @@ func (r *Resolver) ResolveEach(ctx context.Context, query, requestedBy, requeste
 		if err != nil {
 			return fmt.Errorf("resolve spotify %s: %w", kind, err)
 		}
-		for _, st := range sts {
+		for i := min(skip, len(sts)); i < len(sts); i++ {
+			st := sts[i]
 			if err := ctx.Err(); err != nil {
 				return err
 			}
@@ -175,19 +205,22 @@ func (r *Resolver) ResolveEach(ctx context.Context, query, requestedBy, requeste
 				log.Printf("noctune: skipping %q: %v", st.Title, terr)
 				continue
 			}
-			if err := fn(t); err != nil {
+			if err := fn(t, i); err != nil {
 				return err
 			}
 		}
 		return nil
 	}
 
+	if skip > 0 {
+		return nil
+	}
 	tracks, err := r.Resolve(ctx, query, requestedBy, requestedByAvatarURL)
 	if err != nil {
 		return err
 	}
-	for _, t := range tracks {
-		if err := fn(t); err != nil {
+	for i, t := range tracks {
+		if err := fn(t, i); err != nil {
 			return err
 		}
 	}
