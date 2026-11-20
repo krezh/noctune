@@ -433,6 +433,7 @@ func (srv *Server) Handler() http.Handler {
 	post("/g/{guildID}/loop", srv.requireAuth(srv.requireGuildAccess(srv.requireVoicePresence(srv.handleLoop))))
 	post("/g/{guildID}/queue/remove", srv.requireAuth(srv.requireGuildAccess(srv.requireVoicePresence(srv.handleQueueRemove))))
 	post("/g/{guildID}/queue/play", srv.requireAuth(srv.requireGuildAccess(srv.requireVoicePresence(srv.handleQueuePlayNow))))
+	post("/g/{guildID}/queue/next", srv.requireAuth(srv.requireGuildAccess(srv.requireVoicePresence(srv.handleQueuePlayNext))))
 	post("/g/{guildID}/queue/reorder", srv.requireAuth(srv.requireGuildAccess(srv.requireVoicePresence(srv.handleQueueReorder))))
 	post("/g/{guildID}/history/requeue", srv.requireAuth(srv.requireGuildAccess(srv.requireVoicePresence(srv.handleHistoryRequeue))))
 
@@ -1063,6 +1064,17 @@ func (srv *Server) handleQueuePlayNow(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := gp.PlayNow(r.FormValue("id")); err != nil {
 		log.Printf("noctune: web play-now: %v", err)
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (srv *Server) handleQueuePlayNext(w http.ResponseWriter, r *http.Request) {
+	gp, ok := srv.requestPlayer(w, r.PathValue("guildID"))
+	if !ok {
+		return
+	}
+	if err := gp.PlayNext(r.FormValue("id")); err != nil {
+		log.Printf("noctune: web play-next: %v", err)
 	}
 	w.WriteHeader(http.StatusNoContent)
 }

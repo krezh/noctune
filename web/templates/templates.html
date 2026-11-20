@@ -8,6 +8,7 @@
 {{define "icon-stop"}}<svg viewBox="0 0 24 24" fill="currentColor"><rect x="5" y="5" width="14" height="14" rx="2"/></svg>{{end}}
 {{define "icon-remove"}}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="5" y1="5" x2="19" y2="19"/><line x1="19" y1="5" x2="5" y2="19"/></svg>{{end}}
 {{define "icon-volume"}}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="4,9 8,9 12,5 12,19 8,15 4,15" fill="currentColor" stroke="none"/><path d="M16 8a5 5 0 010 8"/></svg>{{end}}
+{{define "icon-play-next"}}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="4" x2="19" y2="4"/><line x1="12" y1="20" x2="12" y2="9"/><polyline points="7 13 12 8 17 13"/></svg>{{end}}
 {{define "icon-grip"}}<svg viewBox="0 0 24 24" fill="currentColor"><circle cx="9" cy="6" r="1.5"/><circle cx="15" cy="6" r="1.5"/><circle cx="9" cy="12" r="1.5"/><circle cx="15" cy="12" r="1.5"/><circle cx="9" cy="18" r="1.5"/><circle cx="15" cy="18" r="1.5"/></svg>{{end}}
 {{define "icon-link"}}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>{{end}}
 
@@ -466,6 +467,10 @@
       {{if $t.URL}}
       <a draggable="false" href="{{$t.URL}}" target="_blank" rel="noopener noreferrer" class="icon-btn small" aria-label="Open track link">{{template "icon-link"}}</a>
       {{end}}
+      <form hx-post="/g/{{$.GuildID}}/queue/next">
+        <input type="hidden" name="id" value="{{$t.ID}}">
+        <button type="submit" class="icon-btn small" aria-label="Play next" title="Play next"{{if not $i}} disabled{{end}}>{{template "icon-play-next"}}</button>
+      </form>
       <form hx-post="/g/{{$.GuildID}}/queue/play">
         <input type="hidden" name="id" value="{{$t.ID}}">
         <button type="submit" class="icon-btn small" aria-label="Play now">{{template "icon-play"}}</button>

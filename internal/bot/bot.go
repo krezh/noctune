@@ -167,6 +167,8 @@ func (b *Bot) onInteraction(event *events.ApplicationCommandInteractionCreate) {
 	switch data.CommandName() {
 	case "play":
 		b.handlePlay(event, guildID, data)
+	case "playnext":
+		b.handlePlayNext(event, guildID, data)
 	case "skip":
 		b.handleSkip(event, guildID)
 	case "pause":
@@ -216,6 +218,7 @@ func (b *Bot) controlPlayer(event *events.ApplicationCommandInteractionCreate, g
 
 func (b *Bot) handlePlay(event *events.ApplicationCommandInteractionCreate, guildID string, data discord.SlashCommandInteractionData) {
 	query := data.String("query")
+	playNext := data.Bool("next")
 
 	if err := event.DeferCreateMessage(false); err != nil {
 		log.Printf("noctune: defer /play response: %v", err)
@@ -262,6 +265,7 @@ func (b *Bot) handlePlay(event *events.ApplicationCommandInteractionCreate, guil
 		}
 		var (
 			first      *player.Track
+			lastID     string
 			trackCount int
 			enqueueErr error
 		)
@@ -276,10 +280,17 @@ func (b *Bot) handlePlay(event *events.ApplicationCommandInteractionCreate, guil
 			if first == nil {
 				first = t
 			}
-			if err := gp.EnqueueResolved(t, generation); err != nil {
+			var err error
+			if playNext {
+				err = gp.EnqueueResolvedNext(t, generation, lastID)
+			} else {
+				err = gp.EnqueueResolved(t, generation)
+			}
+			if err != nil {
 				enqueueErr = err
 				return err
 			}
+			lastID = t.ID
 			trackCount++
 			return nil
 		})
@@ -296,11 +307,15 @@ func (b *Bot) handlePlay(event *events.ApplicationCommandInteractionCreate, guil
 			return
 		}
 
+		dest := "queue"
+		if playNext {
+			dest = "play next"
+		}
 		var embed discord.Embed
 		if trackCount == 1 {
-			embed = trackEmbed(first).WithAuthorName("Added to queue")
+			embed = trackEmbed(first).WithAuthorName("Added to " + dest)
 		} else {
-			label := fmt.Sprintf("Added %d tracks to queue", trackCount)
+			label := fmt.Sprintf("Added %d tracks to %s", trackCount, dest)
 			if resolveErr != nil {
 				label += " (some tracks skipped)"
 			}
@@ -336,6 +351,25 @@ func (b *Bot) webGUILink(guildID string) string {
 		return ""
 	}
 	return strings.TrimRight(b.cfg.WebPublicURL, "/") + "/g/" + guildID
+}
+
+func (b *Bot) handlePlayNext(event *events.ApplicationCommandInteractionCreate, guildID string, data discord.SlashCommandInteractionData) {
+	gp, ok := b.controlPlayer(event, guildID)
+	if !ok {
+		return
+	}
+	pos := data.Int("position")
+	queue := gp.Snapshot().Queue
+	if pos < 1 || pos > len(queue) {
+		b.reply(event, fmt.Sprintf("There's no track #%d in the queue.", pos))
+		return
+	}
+	t := queue[pos-1]
+	if err := gp.PlayNext(t.ID); err != nil {
+		b.reply(event, err.Error())
+		return
+	}
+	b.replyEmbed(event, trackEmbed(t).WithAuthorName("Playing next"))
 }
 
 func (b *Bot) handleSkip(event *events.ApplicationCommandInteractionCreate, guildID string) {
@@ -723,6 +757,22 @@ func commandDefinitions() []discord.ApplicationCommandCreate {
 					Description: "Search text, YouTube URL, or Spotify link",
 					Required:    true,
 				},
+				discord.ApplicationCommandOptionBool{
+					Name:        "next",
+					Description: "Play right after the current track instead of waiting your turn",
+				},
+			},
+		},
+		discord.SlashCommandCreate{
+			Name:        "playnext",
+			Description: "Move a queued track to play next",
+			Options: []discord.ApplicationCommandOption{
+				discord.ApplicationCommandOptionInt{
+					Name:        "position",
+					Description: "Track number as shown in /queue",
+					Required:    true,
+					MinValue:    &positionMin,
+				},
 			},
 		},
 		discord.SlashCommandCreate{Name: "skip", Description: "Skip the current track"},
@@ -765,3 +815,5 @@ func commandDefinitions() []discord.ApplicationCommandCreate {
 }
 
 var volumeMin, volumeMax = 0, 100
+
+var positionMin = 1

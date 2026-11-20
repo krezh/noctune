@@ -450,6 +450,7 @@ main {
 }
 .icon-btn:hover { border-color: var(--amber); color: var(--amber); }
 .icon-btn:active { transform: scale(0.96); }
+.icon-btn:disabled { opacity: 0.35; cursor: default; pointer-events: none; }
 .icon-btn svg { width: 16px; height: 16px; }
 
 .icon-btn.primary {

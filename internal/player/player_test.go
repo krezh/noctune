@@ -3,6 +3,7 @@ package player
 import (
 	"context"
 	"io"
+	"slices"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -481,5 +482,90 @@ func TestTrackURL(t *testing.T) {
 	both := &Track{SourceURL: "https://spotify.com/track/1", WatchURL: "https://youtube.com/watch?v=1"}
 	if got := both.URL(); got != "https://spotify.com/track/1" {
 		t.Errorf("both.URL() = %q, want SourceURL precedence", got)
+	}
+}
+
+func queueTitles(q []*Track) []string {
+	out := make([]string, len(q))
+	for i, t := range q {
+		out[i] = t.Title
+	}
+	return out
+}
+
+func newQueueTestPlayer(current *Track, queue ...*Track) *GuildPlayer {
+	return &GuildPlayer{
+		cfg:        &config.Config{MaxQueueSize: 100},
+		current:    current,
+		queue:      queue,
+		subs:       make(map[chan State]struct{}),
+		playSignal: make(chan struct{}, 1),
+	}
+}
+
+func TestEnqueueTakesTurnsBetweenRequesters(t *testing.T) {
+	gp := newQueueTestPlayer(&Track{Title: "A0", RequestedBy: "a"})
+	for _, tr := range []struct{ title, who string }{
+		{"A1", "a"}, {"A2", "a"}, {"A3", "a"}, {"B0", "b"}, {"B1", "b"}, {"C0", "c"}, {"A4", "a"},
+	} {
+		if err := gp.Enqueue(&Track{ID: tr.title, Title: tr.title, RequestedBy: tr.who}); err != nil {
+			t.Fatalf("Enqueue(%s): %v", tr.title, err)
+		}
+	}
+	want := []string{"B0", "C0", "A1", "B1", "A2", "A3", "A4"}
+	if got := queueTitles(gp.queue); !slices.Equal(got, want) {
+		t.Fatalf("queue = %v, want %v", got, want)
+	}
+}
+
+func TestEnqueueAfterOwnTrackStartedPlaying(t *testing.T) {
+	gp := newQueueTestPlayer(&Track{Title: "B0", RequestedBy: "b"},
+		&Track{Title: "A1", RequestedBy: "a"}, &Track{Title: "A2", RequestedBy: "a"})
+	if err := gp.Enqueue(&Track{Title: "B1", RequestedBy: "b"}); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"A1", "B1", "A2"}
+	if got := queueTitles(gp.queue); !slices.Equal(got, want) {
+		t.Fatalf("queue = %v, want %v", got, want)
+	}
+}
+
+func TestEnqueueSingleRequesterAppends(t *testing.T) {
+	gp := newQueueTestPlayer(&Track{Title: "A0", RequestedBy: "a"}, &Track{Title: "A1", RequestedBy: "a"})
+	if err := gp.Enqueue(&Track{Title: "A2", RequestedBy: "a"}); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"A1", "A2"}
+	if got := queueTitles(gp.queue); !slices.Equal(got, want) {
+		t.Fatalf("queue = %v, want %v", got, want)
+	}
+}
+
+func TestEnqueueResolvedNextKeepsOrder(t *testing.T) {
+	gp := newQueueTestPlayer(nil, &Track{ID: "x", Title: "X"})
+	last := ""
+	for _, title := range []string{"N1", "N2", "N3"} {
+		if err := gp.EnqueueResolvedNext(&Track{ID: title, Title: title}, 0, last); err != nil {
+			t.Fatal(err)
+		}
+		last = title
+	}
+	want := []string{"N1", "N2", "N3", "X"}
+	if got := queueTitles(gp.queue); !slices.Equal(got, want) {
+		t.Fatalf("queue = %v, want %v", got, want)
+	}
+}
+
+func TestPlayNextMovesToFront(t *testing.T) {
+	gp := newQueueTestPlayer(nil, &Track{ID: "1", Title: "1"}, &Track{ID: "2", Title: "2"}, &Track{ID: "3", Title: "3"})
+	if err := gp.PlayNext("3"); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"3", "1", "2"}
+	if got := queueTitles(gp.queue); !slices.Equal(got, want) {
+		t.Fatalf("queue = %v, want %v", got, want)
+	}
+	if err := gp.PlayNext("missing"); err == nil {
+		t.Fatal("PlayNext(missing) succeeded, want error")
 	}
 }

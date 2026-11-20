@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -434,15 +435,80 @@ func (gp *GuildPlayer) EnqueueResolved(track *Track, generation uint64) error {
 	return nil
 }
 
-func (gp *GuildPlayer) enqueueLocked(track *Track) error {
+// EnqueueResolvedNext is EnqueueResolved, but places track at the front of
+// the queue, or right after afterID if that track is still queued, so a
+// streamed playlist keeps its order.
+func (gp *GuildPlayer) EnqueueResolvedNext(track *Track, generation uint64, afterID string) error {
+	gp.mu.Lock()
+	if generation != gp.resolutionGen {
+		gp.mu.Unlock()
+		return context.Canceled
+	}
+	err := gp.checkCapacityLocked()
+	if err == nil {
+		idx := 0
+		for i, t := range gp.queue {
+			if afterID != "" && t.ID == afterID {
+				idx = i + 1
+				break
+			}
+		}
+		gp.queue = slices.Insert(gp.queue, idx, track)
+	}
+	gp.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	gp.notify()
+
+	select {
+	case gp.playSignal <- struct{}{}:
+	default:
+	}
+	return nil
+}
+
+func (gp *GuildPlayer) checkCapacityLocked() error {
 	if gp.closed {
 		return fmt.Errorf("player is closed")
 	}
 	if len(gp.queue) >= gp.cfg.MaxQueueSize {
 		return fmt.Errorf("queue is full (max %d)", gp.cfg.MaxQueueSize)
 	}
-	gp.queue = append(gp.queue, track)
 	return nil
+}
+
+func (gp *GuildPlayer) enqueueLocked(track *Track) error {
+	if err := gp.checkCapacityLocked(); err != nil {
+		return err
+	}
+	gp.queue = slices.Insert(gp.queue, fairInsertIndex(gp.current, gp.queue, track.RequestedBy), track)
+	return nil
+}
+
+// fairInsertIndex returns where a new track from requester belongs so that
+// requesters take turns: it goes after requester's last queued track, ahead
+// of the first track whose requester already had a turn since then.
+func fairInsertIndex(current *Track, queue []*Track, requester string) int {
+	start := 0
+	for i, t := range slices.Backward(queue) {
+		if t.RequestedBy == requester {
+			start = i + 1
+			break
+		}
+	}
+	seen := make(map[string]struct{})
+	if start == 0 && current != nil && current.RequestedBy != requester {
+		seen[current.RequestedBy] = struct{}{}
+	}
+	for i := start; i < len(queue); i++ {
+		who := queue[i].RequestedBy
+		if _, ok := seen[who]; ok {
+			return i
+		}
+		seen[who] = struct{}{}
+	}
+	return len(queue)
 }
 
 func (gp *GuildPlayer) addHistory(track *Track) {
@@ -481,25 +547,39 @@ func (gp *GuildPlayer) Skip() error {
 	return nil
 }
 
+func (gp *GuildPlayer) moveToFrontLocked(id string) error {
+	for i, t := range gp.queue {
+		if t.ID == id {
+			copy(gp.queue[1:i+1], gp.queue[:i])
+			gp.queue[0] = t
+			return nil
+		}
+	}
+	return fmt.Errorf("track not found in queue")
+}
+
+// PlayNext moves a queued track to the front of the queue without
+// interrupting the current one.
+func (gp *GuildPlayer) PlayNext(id string) error {
+	gp.mu.Lock()
+	err := gp.moveToFrontLocked(id)
+	gp.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	gp.notify()
+	return nil
+}
+
 // PlayNow moves a queued track to the front of the queue and skips the
 // current one so playbackLoop picks it up next. Anything it jumped ahead
 // of stays queued, just pushed back rather than dropped.
 func (gp *GuildPlayer) PlayNow(id string) error {
 	gp.mu.Lock()
-	idx := -1
-	for i, t := range gp.queue {
-		if t.ID == id {
-			idx = i
-			break
-		}
-	}
-	if idx == -1 {
+	if err := gp.moveToFrontLocked(id); err != nil {
 		gp.mu.Unlock()
-		return fmt.Errorf("track not found in queue")
+		return err
 	}
-	track := gp.queue[idx]
-	gp.queue = append(gp.queue[:idx], gp.queue[idx+1:]...)
-	gp.queue = append([]*Track{track}, gp.queue...)
 	handle := gp.handle
 	gp.mu.Unlock()
 	gp.notify()
