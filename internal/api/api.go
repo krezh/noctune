@@ -1085,6 +1085,8 @@ func (srv *Server) handleQueueReorder(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := gp.Reorder(r.Form["id"]); err != nil {
 		log.Printf("noctune: web queue reorder: %v", err)
+		srv.renderToast(w, "The queue changed while you were dragging; try again.")
+		return
 	}
 	w.WriteHeader(http.StatusNoContent)
 }

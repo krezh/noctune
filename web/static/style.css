@@ -688,16 +688,34 @@ input[type=range]::-moz-range-thumb {
   flex: none;
   display: flex;
   align-items: center;
+  align-self: stretch;
+  padding: 0 0.35rem 0 0.6rem;
+  margin: -0.4rem -0.35rem -0.4rem -0.6rem;
   color: var(--border);
   cursor: grab;
   touch-action: none;
+  user-select: none;
 }
 .queue-list li:hover .drag-handle { color: var(--moon-dim); }
 .drag-handle svg { width: 15px; height: 15px; }
 .queue-list li.no-anim { animation: none; }
+.queue-list li { transition: transform 0.2s cubic-bezier(0.2, 0, 0, 1); }
+.queue-list.reordering li { position: relative; }
 .queue-list li.dragging {
-  opacity: 0.4;
-  cursor: grabbing;
+  z-index: 2;
+  transition: none;
+  background: color-mix(in srgb, var(--amber) 10%, var(--panel-2));
+  border-color: color-mix(in srgb, var(--amber) 45%, var(--border));
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.45);
+}
+.queue-list li.dragging .drag-handle { color: var(--amber); }
+.queue-list.settle li { transition: none; }
+html.queue-reordering, html.queue-reordering * {
+  cursor: grabbing !important;
+  user-select: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .queue-list li { transition: none; }
 }
 
 .queue-thumb, .queue-thumb-placeholder {

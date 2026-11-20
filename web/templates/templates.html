@@ -452,7 +452,7 @@
   {{if .State.Queue}}
   <ul class="queue-list" data-reorder-url="/g/{{.GuildID}}/queue/reorder">
     {{range $i, $t := .State.Queue}}
-    <li draggable="true" data-id="{{$t.ID}}">
+    <li data-id="{{$t.ID}}">
       <span class="drag-handle" aria-hidden="true">{{template "icon-grip"}}</span>
       <span class="idx">{{inc $i}}</span>
       {{if $t.ArtworkURL}}
@@ -486,7 +486,6 @@
   (function () {
     var list = document.querySelector('.queue-list');
     if (!list) return;
-    var dragEl = null;
 
     // Every #queue-section swap (add, remove, or reorder) replaces every
     // <li> wholesale, so without this the entrance animation would replay
@@ -505,66 +504,191 @@
     });
     window.__noctuneQueueSeenIds = currentIds;
 
-    function itemAfter(y) {
-      var items = Array.prototype.slice.call(list.querySelectorAll('li[data-id]:not(.dragging)'));
-      var closest = { offset: -Infinity, element: null };
-      items.forEach(function (child) {
-        var box = child.getBoundingClientRect();
-        var offset = y - box.top - box.height / 2;
-        if (offset < 0 && offset > closest.offset) closest = { offset: offset, element: child };
+    // A live SSE update replacing #queue-section mid-drag would rip the
+    // row out from under the pointer, so queue swaps are held back while a
+    // drag is in progress and the latest one is applied once it settles.
+    var dragState = window.__noctuneQueueDrag;
+    if (!dragState) {
+      dragState = window.__noctuneQueueDrag = { active: false, awaiting: false, pending: null };
+      document.addEventListener('htmx:oobBeforeSwap', function (e) {
+        if (!(dragState.active || dragState.awaiting) || e.detail.target.id !== 'queue-section') return;
+        var el = e.detail.fragment.firstElementChild;
+        if (!el) return;
+        e.detail.shouldSwap = false;
+        dragState.pending = el.outerHTML;
       });
-      return closest.element;
     }
 
-    function submitOrder() {
-      var ids = Array.prototype.map.call(list.querySelectorAll('li[data-id]'), function (li) { return li.dataset.id; });
+    function flushPending() {
+      var html = dragState.pending;
+      dragState.pending = null;
+      var section = document.getElementById('queue-section');
+      if (html && section) htmx.swap(section, html, { swapStyle: 'outerHTML' });
+    }
+
+    function rows() {
+      return Array.prototype.slice.call(list.querySelectorAll('li[data-id]'));
+    }
+
+    function renumber() {
+      rows().forEach(function (li, i) {
+        var idx = li.querySelector('.idx');
+        if (idx) idx.textContent = i + 1;
+      });
+    }
+
+    function applyOrder(ids) {
+      var byId = {};
+      rows().forEach(function (li) { byId[li.dataset.id] = li; });
+      ids.forEach(function (id) { if (byId[id]) list.appendChild(byId[id]); });
+      renumber();
+    }
+
+    function submitOrder(previousIds) {
+      var ids = rows().map(function (li) { return li.dataset.id; });
       var body = ids.map(function (id) { return 'id=' + encodeURIComponent(id); }).join('&');
+      dragState.awaiting = true;
       fetch(list.dataset.reorderUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
         body: body
       }).then(function (resp) { return resp.text(); }).then(function (html) {
-        // A 204 (reorder accepted) has no body; a rejection (e.g. not in
-        // the bot's voice channel) comes back as the same #toast fragment
-        // every other action uses — forward it by hand since this request
-        // didn't go through htmx.
-        if (!html) return;
+        dragState.awaiting = false;
+        if (!html) {
+          flushPending();
+          return;
+        }
+        // A rejection comes back as the same #toast fragment every other
+        // action uses; forward it by hand since this request didn't go
+        // through htmx, and put the rows back where the server has them.
         var tmp = document.createElement('div');
         tmp.innerHTML = html;
         var toast = tmp.querySelector('#toast');
         var target = document.getElementById('toast');
         if (toast && target) target.replaceWith(toast);
-      }).catch(function () {});
+        if (dragState.pending) flushPending();
+        else applyOrder(previousIds);
+      }).catch(function () {
+        dragState.awaiting = false;
+        if (dragState.pending) flushPending();
+        else applyOrder(previousIds);
+      });
     }
 
-    list.addEventListener('dragstart', function (e) {
-      var li = e.target.closest('li[data-id]');
-      if (!li) return;
-      dragEl = li;
-      e.dataTransfer.effectAllowed = 'move';
-      // Firefox refuses to start a drag at all without a setData() call
-      // during dragstart (Chrome/Safari are lenient); this also
-      // overrides the browser's own drag payload for the artwork
-      // <img>, which is natively draggable on its own otherwise.
-      e.dataTransfer.setData('text/plain', li.dataset.id);
+    var drag = null;
+    var EDGE = 48;
+
+    function pageY(clientY) { return clientY + window.scrollY; }
+
+    function update() {
+      var dy = pageY(drag.clientY) - drag.startY;
+      dy = Math.max(drag.minDy, Math.min(drag.maxDy, dy));
+      drag.el.style.transform = 'translateY(' + dy + 'px)';
+      var center = drag.mids[drag.from] + dy;
+      var to = drag.from;
+      for (var i = 0; i < drag.items.length; i++) {
+        if (i < drag.from && center < drag.mids[i]) { to = i; break; }
+      }
+      for (var j = drag.items.length - 1; j > drag.from; j--) {
+        if (center > drag.mids[j]) { to = j; break; }
+      }
+      drag.to = to;
+      drag.items.forEach(function (li, i) {
+        if (i === drag.from) return;
+        var shift = 0;
+        if (i > drag.from && i <= to) shift = -drag.slot;
+        else if (i < drag.from && i >= to) shift = drag.slot;
+        li.style.transform = shift ? 'translateY(' + shift + 'px)' : '';
+      });
+    }
+
+    function autoscroll() {
+      if (!drag) return;
+      var speed = 0;
+      if (drag.clientY < EDGE) speed = -Math.ceil((EDGE - drag.clientY) / 4);
+      else if (drag.clientY > window.innerHeight - EDGE) speed = Math.ceil((drag.clientY - (window.innerHeight - EDGE)) / 4);
+      if (speed) {
+        window.scrollBy(0, speed);
+        update();
+      }
+      drag.raf = requestAnimationFrame(autoscroll);
+    }
+
+    function finish(commit) {
+      if (!drag) return;
+      var d = drag;
+      drag = null;
+      cancelAnimationFrame(d.raf);
+      document.removeEventListener('keydown', onKey, true);
+      document.documentElement.classList.remove('queue-reordering');
+      var previousIds = d.items.map(function (li) { return li.dataset.id; });
+      var moved = commit && d.to !== d.from;
+      if (moved) {
+        list.classList.add('settle');
+        if (d.to > d.from) list.insertBefore(d.el, d.items[d.to].nextSibling);
+        else list.insertBefore(d.el, d.items[d.to]);
+        d.items.forEach(function (li) { li.style.transform = ''; });
+        void list.offsetHeight;
+        list.classList.remove('settle');
+        renumber();
+      } else {
+        d.items.forEach(function (li) { li.style.transform = ''; });
+      }
+      list.classList.remove('reordering');
+      d.el.classList.remove('dragging');
+      dragState.active = false;
+      if (moved) submitOrder(previousIds);
+      else if (dragState.pending) flushPending();
+    }
+
+    function onKey(e) {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        finish(false);
+      }
+    }
+
+    list.addEventListener('pointerdown', function (e) {
+      var handle = e.target.closest('.drag-handle');
+      if (!handle || drag || dragState.awaiting || (e.pointerType === 'mouse' && e.button !== 0)) return;
+      var li = handle.closest('li[data-id]');
+      var items = rows();
+      if (!li || items.length < 2) return;
+      e.preventDefault();
+      var rects = items.map(function (it) { return it.getBoundingClientRect(); });
+      var from = items.indexOf(li);
+      var gap = parseFloat(getComputedStyle(list).rowGap) || 0;
+      var first = rects[0], last = rects[rects.length - 1], own = rects[from];
+      drag = {
+        el: li,
+        items: items,
+        from: from,
+        to: from,
+        slot: own.height + gap,
+        mids: rects.map(function (r) { return pageY(r.top + r.height / 2); }),
+        startY: pageY(e.clientY),
+        clientY: e.clientY,
+        minDy: first.top - own.top,
+        maxDy: last.bottom - own.bottom,
+        raf: 0
+      };
+      dragState.active = true;
+      items.forEach(function (it) { it.classList.add('no-anim'); });
+      list.classList.add('reordering');
       li.classList.add('dragging');
+      document.documentElement.classList.add('queue-reordering');
+      handle.setPointerCapture(e.pointerId);
+      document.addEventListener('keydown', onKey, true);
+      drag.raf = requestAnimationFrame(autoscroll);
     });
-    list.addEventListener('dragend', function () {
-      if (dragEl) dragEl.classList.remove('dragging');
-      dragEl = null;
+    list.addEventListener('pointermove', function (e) {
+      if (!drag) return;
+      drag.clientY = e.clientY;
+      update();
     });
-    list.addEventListener('dragover', function (e) {
-      if (!dragEl) return;
-      e.preventDefault();
-      var after = itemAfter(e.clientY);
-      if (after == null) list.appendChild(dragEl);
-      else if (after !== dragEl) list.insertBefore(dragEl, after);
-    });
-    list.addEventListener('drop', function (e) {
-      if (!dragEl) return;
-      e.preventDefault();
-      submitOrder();
-    });
+    list.addEventListener('pointerup', function () { finish(true); });
+    list.addEventListener('pointercancel', function () { finish(false); });
+    list.addEventListener('lostpointercapture', function () { finish(true); });
   })();
   </script>
   {{else}}
