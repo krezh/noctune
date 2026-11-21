@@ -7,6 +7,13 @@
 * **web:** derive page titles and favicon from the Discord bot profile
 * **player:** persist complete playback history in SQLite with paginated browsing
 
+## [0.3.2](https://github.com/krezh/noctune/compare/0.3.1...0.3.2) (2026-11-21)
+
+
+### Bug Fixes
+
+* **web:** rework queue drag-to-reorder ([8ed9aae](https://github.com/krezh/noctune/commit/8ed9aae280c0987b230ecb74cc958ad7c6017085))
+
 ## [0.3.1](https://github.com/krezh/noctune/compare/0.3.0...0.3.1) (2026-11-20)
 
 
