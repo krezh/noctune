@@ -7,6 +7,14 @@
 * **web:** derive page titles and favicon from the Discord bot profile
 * **player:** persist complete playback history in SQLite with paginated browsing
 
+## [0.3.3](https://github.com/krezh/noctune/compare/0.3.2...0.3.3) (2026-11-24)
+
+
+### Features
+
+* **deps:** update dependency yt-dlp (2026.10.26 ➔ 2026.11.23) ([#36](https://github.com/krezh/noctune/issues/36)) ([48e9267](https://github.com/krezh/noctune/commit/48e92675689f320c8eaa57a9d12ef00d51342bf7))
+* **deps:** update module modernc.org/sqlite (v1.62.0 ➔ v1.63.0) ([#34](https://github.com/krezh/noctune/issues/34)) ([31af38b](https://github.com/krezh/noctune/commit/31af38bbf410ccb44c28fe632db39be20470dcaf))
+
 ## [0.3.2](https://github.com/krezh/noctune/compare/0.3.1...0.3.2) (2026-11-21)
 
 
